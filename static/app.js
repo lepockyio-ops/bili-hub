@@ -186,6 +186,10 @@ async function loadRadar() {
       const view = fmtNum(t.latest_view);
       const like = fmtNum(t.latest_like);
       const coin = fmtNum(t.latest_coin);
+      // 追踪中显示"停止"（软删），已停止/所有状态都显示"删除"（硬删）
+      const stopBtn = t.active
+        ? `<button class="btn small" title="停止采集，保留历史时序" onclick="radarStop('${t.bvid}')">⏸ 停止</button>`
+        : '';
       return `
       <div class="item">
         <div class="info">
@@ -200,7 +204,8 @@ async function loadRadar() {
           </div>
         </div>
         <div class="item-actions">
-          <button class="btn danger small" onclick="radarRemove('${t.bvid}')">停止</button>
+          ${stopBtn}
+          <button class="btn danger small" title="彻底删除，含历史时序（不可恢复）" onclick="radarDelete('${t.bvid}', '${escapeHtml(t.title || t.bvid).replace(/'/g, '&#39;')}', ${t.point_count})">🗑 删除</button>
         </div>
       </div>
       `;
@@ -236,14 +241,52 @@ async function radarAdd() {
   }
 }
 
-async function radarRemove(bvid) {
-  if (!confirm(`停止追踪 ${bvid}？（保留历史数据）`)) return;
+/**
+ * 软删：停止采集，保留历史时序数据（可以将来手动重启追踪）
+ */
+async function radarStop(bvid) {
+  if (!confirm(`⏸ 停止追踪 ${bvid}？\n\n历史数据会保留。将来可用 CLI 手动恢复：\n  biliradar.py add ${bvid}`)) return;
   showLoading("正在停止追踪...");
   try {
-    await api(`/api/radar/tracks/${bvid}`, {method: "DELETE"});
+    const r = await api(`/api/radar/tracks/${bvid}`, {method: "DELETE"});
+    if (r.returncode === 0) {
+      toast("info", "⏸ 已停止追踪", `${escapeHtml(bvid)}<br>历史时序数据已保留`);
+    } else {
+      toast("danger", "停止失败", escapeHtml((r.stderr || r.stdout || "").slice(0, 200)));
+    }
     loadRadar();
   } finally { hideLoading(); }
 }
+
+/**
+ * 硬删（purge）：彻底删除记录 + 所有历史时序，不可恢复
+ * 双重确认，输入 bvid 才能删
+ */
+async function radarDelete(bvid, title, pointCount) {
+  const line1 = `🗑 彻底删除以下曲目？`;
+  const line2 = `《${title}》\n(${bvid} · ${pointCount} 个历史数据点)`;
+  const line3 = `⚠️ 此操作不可恢复！\n历史时序数据会一起清除。`;
+  if (!confirm(`${line1}\n\n${line2}\n\n${line3}`)) return;
+  // 二次确认
+  const typed = prompt(`⚠️ 请输入 bvid 确认删除：\n${bvid}`);
+  if (typed !== bvid) {
+    toast("warn", "取消删除", "bvid 未匹配");
+    return;
+  }
+  showLoading("正在彻底删除...");
+  try {
+    const r = await api(`/api/radar/tracks/${bvid}?purge=1`, {method: "DELETE"});
+    if (r.returncode === 0) {
+      toast("success", "🗑 已彻底删除", `${escapeHtml(bvid)} 及所有历史数据已清除`);
+    } else {
+      toast("danger", "删除失败", escapeHtml((r.stderr || r.stdout || "").slice(0, 200)));
+    }
+    loadRadar();
+  } finally { hideLoading(); }
+}
+
+/* 旧兼容名（防止 hash 里遗留引用） */
+async function radarRemove(bvid) { return radarStop(bvid); }
 
 async function radarCollect() {
   showLoading("正在采集所有追踪曲目数据（每首约 5-8s）...");

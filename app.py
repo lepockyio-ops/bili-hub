@@ -380,7 +380,16 @@ def api_radar_add():
 
 @app.delete("/api/radar/tracks/<bvid>")
 def api_radar_remove(bvid: str):
-    r = run_tool(RADAR_DIR, ["biliradar.py", "remove", bvid], timeout=30)
+    """
+    默认软删（停止采集，保留历史时序）。
+    加 ?purge=1 会走 biliradar.py remove --purge：连历史数据一并删除。
+    """
+    purge = request.args.get("purge", "").strip().lower() in ("1", "true", "yes")
+    args = ["biliradar.py", "remove", bvid]
+    if purge:
+        args.append("--purge")
+    r = run_tool(RADAR_DIR, args, timeout=30)
+    r["purge"] = purge
     return jsonify(r)
 
 
