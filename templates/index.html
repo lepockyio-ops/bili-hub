@@ -160,12 +160,17 @@
     </div>
 
     <div class="card">
+      <h3>后台运行中的任务 <button class="btn small" onclick="loadCommentJobs()">🔄</button></h3>
+      <div id="comments-jobs" class="list"></div>
+    </div>
+
+    <div class="card">
       <h3>历史输出文件 <button class="btn small" onclick="loadCommentsOutputs()">🔄</button></h3>
       <div id="comments-outputs" class="list"></div>
     </div>
 
     <div class="card" id="comm-result" style="display:none;">
-      <h3>提取结果</h3>
+      <h3>最近一次任务日志</h3>
       <pre id="comm-result-content"></pre>
     </div>
   </section>
@@ -175,6 +180,9 @@
     <div class="spinner"></div>
     <div id="loading-text" class="loading-text">处理中...</div>
   </div>
+
+  <!-- 右下角 Toast 通知区 -->
+  <div id="toast-container"></div>
 
 </main>
 

@@ -28,6 +28,9 @@ window.addEventListener("load", () => {
   loadWatch();
   loadRadar();
   loadCommentsOutputs();
+  loadCommentJobs();
+  // 恢复未完成的 job 轮询（例如页面刷新后）
+  resumePollingRunningJobs();
 });
 
 // ------------- Loading 遮罩 -------------
@@ -268,11 +271,17 @@ async function radarAlerts() {
 }
 
 // ============================================================================
-// Comments
+// Comments — v1.1 后台任务模式
 // ============================================================================
+const _pollingJobs = new Set();
+
 async function commentsExtract() {
   const bvid = document.getElementById("comm-bvid").value.trim();
-  if (!bvid) { alert("请填 bvid 或视频链接"); return; }
+  if (!bvid) { toast("warn", "缺少视频", "请填 bvid 或视频链接"); return; }
+
+  // 首次点击顺便请求桌面通知权限
+  requestNotifyPermission();
+
   const payload = {
     bvid,
     max_pages: parseInt(document.getElementById("comm-pages").value) || 1,
@@ -282,29 +291,118 @@ async function commentsExtract() {
     no_translate: document.getElementById("comm-no-trans").checked,
     no_reply: document.getElementById("comm-no-reply").checked,
   };
-  showLoading("正在提取评论（含 AI 翻译，可能需要 1-3 分钟）...");
   try {
     const r = await api("/api/comments/extract", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify(payload)
     });
-    let text = r.stdout + (r.stderr ? "\n---\nSTDERR:\n" + r.stderr : "");
-    if (r.output_file) {
-      const filename = r.output_file.split(/[\\/]/).pop();
-      text += `\n\n📥 [点击下载](/api/comments/download/${encodeURIComponent(filename)})`;
-      // 提示一下
-      setTimeout(() => {
-        if (confirm(`✓ 提取完成！是否立刻下载 ${filename}？`)) {
-          window.open(`/api/comments/download/${encodeURIComponent(filename)}`, "_blank");
-        }
-      }, 100);
+    if (r.error) {
+      toast("danger", "提交失败", r.error);
+      return;
     }
-    showResult("comm-result", text);
-    loadCommentsOutputs();
+    if (r.job_id) {
+      toast(
+        "info",
+        "🚀 任务已提交",
+        `<strong>${escapeHtml(bvid)}</strong> 后台运行中，你可以继续操作其他功能。<br>完成后会弹出提示。`,
+      );
+      pollCommentJob(r.job_id, bvid);
+      loadCommentJobs();
+    }
+    // 清空输入方便下一个
+    document.getElementById("comm-bvid").value = "";
   } catch (e) {
-    alert("失败: " + e.message);
-  } finally { hideLoading(); }
+    toast("danger", "提交失败", e.message);
+  }
+}
+
+async function pollCommentJob(jobId, bvid) {
+  if (_pollingJobs.has(jobId)) return;
+  _pollingJobs.add(jobId);
+
+  while (true) {
+    try {
+      await sleep(3000);
+      const j = await api(`/api/comments/jobs/${jobId}`);
+      if (!j || j.status === "unknown") break;
+      loadCommentJobs(); // 更新任务列表状态
+      if (j.status === "done") {
+        const filename = j.download_name || (j.output_file || "").split(/[\\/]/).pop();
+        toast(
+          "success",
+          "✓ 评论抓取完成",
+          `<strong>${escapeHtml(bvid)}</strong> 已就绪<br>` +
+            (filename ? `<a href="/api/comments/download/${encodeURIComponent(filename)}" class="btn primary small" style="margin-top:6px;">📥 下载 ${escapeHtml(filename)}</a>` : ""),
+          20000,
+        );
+        showResult("comm-result", (j.stdout || "") + (j.stderr ? "\n---\nSTDERR:\n" + j.stderr : ""));
+        // 桌面通知
+        notify(`✓ 评论抓取完成 · ${bvid}`, filename ? `文件: ${filename}` : "");
+        loadCommentsOutputs();
+        break;
+      }
+      if (j.status === "failed") {
+        toast("danger", "✗ 评论抓取失败", `<strong>${escapeHtml(bvid)}</strong><br>${escapeHtml((j.stderr || "").slice(0, 200) || "查看日志了解详情")}`, 30000);
+        showResult("comm-result", (j.stdout || "") + (j.stderr ? "\n---\nSTDERR:\n" + j.stderr : ""));
+        notify(`✗ 评论抓取失败 · ${bvid}`, "查看 BiliHub 页面详情");
+        break;
+      }
+    } catch (e) {
+      console.error("poll error:", e);
+      await sleep(5000);
+    }
+  }
+  _pollingJobs.delete(jobId);
+}
+
+async function resumePollingRunningJobs() {
+  try {
+    const jobs = await api("/api/comments/jobs");
+    for (const j of jobs) {
+      if (j.status === "queued" || j.status === "running") {
+        pollCommentJob(j.id, j.bvid);
+      }
+    }
+  } catch (e) { /* ignore */ }
+}
+
+async function loadCommentJobs() {
+  try {
+    const jobs = await api("/api/comments/jobs");
+    const box = document.getElementById("comments-jobs");
+    const running = jobs.filter(j => j.status === "queued" || j.status === "running");
+    const recent = jobs.slice(0, 8);
+    if (recent.length === 0) {
+      box.innerHTML = '<div class="empty">暂无任务。提交上方表单即可开始。</div>';
+      return;
+    }
+    box.innerHTML = recent.map(j => {
+      const statusText = ({queued:"排队中",running:"运行中",done:"已完成",failed:"失败"})[j.status] || j.status;
+      const dur = j.duration_sec ? `${j.duration_sec}s` : '';
+      const dlBtn = j.output_file
+        ? `<a class="btn primary small" href="/api/comments/download/${encodeURIComponent(j.output_file)}" target="_blank">📥</a>`
+        : '';
+      return `
+        <div class="item">
+          <div class="info">
+            <div class="item-title">
+              <span class="job-status ${j.status}">${statusText}</span>
+              ${escapeHtml(j.bvid)}
+            </div>
+            <div class="item-sub">
+              ${escapeHtml(j.id.slice(-8))} · 开始于 ${j.started_at_fmt}
+              ${j.finished_at_fmt ? ` · 结束于 ${j.finished_at_fmt}` : ''}
+              · 耗时 ${dur}
+            </div>
+          </div>
+          <div class="item-actions">${dlBtn}</div>
+        </div>
+      `;
+    }).join("");
+  } catch (e) {
+    document.getElementById("comments-jobs").innerHTML = `<div class="alert danger">加载失败: ${e.message}</div>`;
+  }
 }
 
 async function loadCommentsOutputs() {
@@ -355,4 +453,56 @@ function showResult(id, text) {
   const el = document.getElementById(id);
   document.getElementById(id + "-content").textContent = text;
   el.style.display = "block";
+}
+
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+// ============================================================================
+// Toast 通知（右下角）
+// ============================================================================
+let _toastId = 0;
+function toast(level, title, msgHtml, durationMs) {
+  const id = "toast-" + (++_toastId);
+  const container = document.getElementById("toast-container");
+  if (!container) return;
+  const el = document.createElement("div");
+  el.className = `toast ${level}`;
+  el.id = id;
+  const iconMap = { info: "🔔", success: "✓", warn: "⚠️", danger: "✗" };
+  el.innerHTML = `
+    <button class="toast-close" onclick="dismissToast('${id}')">×</button>
+    <div class="toast-title">
+      <span>${iconMap[level] || ""}</span>
+      <span>${escapeHtml(title)}</span>
+    </div>
+    <div class="toast-msg">${msgHtml || ""}</div>
+  `;
+  container.appendChild(el);
+  const dur = durationMs || (level === "danger" ? 15000 : 6000);
+  setTimeout(() => dismissToast(id), dur);
+}
+function dismissToast(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.add("exiting");
+  setTimeout(() => el.remove(), 260);
+}
+
+// ============================================================================
+// 桌面通知
+// ============================================================================
+function requestNotifyPermission() {
+  if (!("Notification" in window)) return;
+  if (Notification.permission === "default") {
+    Notification.requestPermission();
+  }
+}
+function notify(title, body) {
+  if (!("Notification" in window)) return;
+  if (Notification.permission !== "granted") return;
+  try {
+    new Notification(title, { body, icon: "/static/favicon.ico" });
+  } catch (e) { /* ignore */ }
 }

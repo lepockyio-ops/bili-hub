@@ -222,27 +222,49 @@ def comments_list_outputs():
 # ============================================================================
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
-# --- 全局任务状态（简单单进程内存管理）---
-_task_status = {"running": False, "kind": "", "started_at": 0, "log": []}
-_task_lock = threading.Lock()
+# --- 后台任务系统（评论抓取用）---
+import random as _rnd
+_comment_jobs = {}  # {job_id: {status, bvid, args, started_at, finished_at, output_file, stdout, stderr, returncode}}
+_jobs_lock = threading.Lock()
 
 
-def _task_start(kind: str):
-    with _task_lock:
-        _task_status["running"] = True
-        _task_status["kind"] = kind
-        _task_status["started_at"] = int(time.time())
-        _task_status["log"] = []
+def _make_job_id() -> str:
+    return f"job-{int(time.time() * 1000)}-{_rnd.randint(1000, 9999)}"
 
 
-def _task_append(line: str):
-    with _task_lock:
-        _task_status["log"].append(line)
+def _run_comments_job_thread(job_id: str, args: list[str]):
+    with _jobs_lock:
+        if job_id in _comment_jobs:
+            _comment_jobs[job_id]["status"] = "running"
+    r = run_tool(COMMENTS_DIR, args, timeout=1800)
+    output_file = None
+    for line in (r.get("stdout") or "").splitlines():
+        m = re.search(r"XLSX 已保存：(.+\.xlsx)", line)
+        if m:
+            output_file = m.group(1).strip()
+            break
+    with _jobs_lock:
+        if job_id in _comment_jobs:
+            _comment_jobs[job_id]["status"] = "done" if r.get("returncode") == 0 else "failed"
+            _comment_jobs[job_id]["returncode"] = r.get("returncode", -1)
+            _comment_jobs[job_id]["stdout"] = r.get("stdout", "")
+            _comment_jobs[job_id]["stderr"] = r.get("stderr", "")
+            _comment_jobs[job_id]["output_file"] = output_file
+            _comment_jobs[job_id]["finished_at"] = int(time.time())
 
 
-def _task_end():
-    with _task_lock:
-        _task_status["running"] = False
+def _prune_old_jobs(max_keep: int = 20):
+    """只保留最近 max_keep 个 job，防止内存无限增长。"""
+    with _jobs_lock:
+        if len(_comment_jobs) <= max_keep:
+            return
+        sorted_ids = sorted(
+            _comment_jobs.keys(),
+            key=lambda k: _comment_jobs[k].get("started_at", 0),
+            reverse=True,
+        )
+        for k in sorted_ids[max_keep:]:
+            del _comment_jobs[k]
 
 
 # --- Pages ---
@@ -399,6 +421,10 @@ def api_comments_outputs():
 
 @app.post("/api/comments/extract")
 def api_comments_extract():
+    """
+    v1.1: 立刻返回 job_id，后台线程执行 subprocess。
+    前端应轮询 /api/comments/jobs/<job_id> 获取状态。
+    """
     data = request.get_json(silent=True) or {}
     bvid = data.get("bvid", "").strip()
     if not bvid:
@@ -425,21 +451,73 @@ def api_comments_extract():
     if target_lang and target_lang != "ja":
         args += ["--target-lang", target_lang]
 
-    r = run_tool(COMMENTS_DIR, args, timeout=1200)
-    # 提取输出文件名
-    output_file = None
-    for line in r["stdout"].splitlines():
-        m = re.search(r"XLSX 已保存：(.+\.xlsx)", line)
-        if m:
-            output_file = m.group(1).strip()
-            break
+    job_id = _make_job_id()
+    with _jobs_lock:
+        _comment_jobs[job_id] = {
+            "id": job_id,
+            "status": "queued",
+            "bvid": bvid,
+            "args_display": " ".join(args[1:]),
+            "started_at": int(time.time()),
+            "finished_at": None,
+            "output_file": None,
+            "stdout": "",
+            "stderr": "",
+            "returncode": None,
+        }
+
+    t = threading.Thread(target=_run_comments_job_thread, args=(job_id, args), daemon=True)
+    t.start()
+    _prune_old_jobs()
 
     return jsonify({
-        "returncode": r["returncode"],
-        "stdout": r["stdout"],
-        "stderr": r["stderr"],
-        "output_file": output_file,
+        "job_id": job_id,
+        "status": "queued",
+        "message": "任务已在后台开始，请通过 /api/comments/jobs/<job_id> 轮询状态",
     })
+
+
+@app.get("/api/comments/jobs")
+def api_comments_jobs_list():
+    """列出所有后台任务，按启动时间倒序。"""
+    with _jobs_lock:
+        jobs = list(_comment_jobs.values())
+    jobs.sort(key=lambda j: j.get("started_at", 0), reverse=True)
+    # 精简输出，避免 stdout/stderr 太大
+    lite = []
+    for j in jobs:
+        lite.append({
+            "id": j["id"],
+            "status": j["status"],
+            "bvid": j["bvid"],
+            "started_at": j["started_at"],
+            "started_at_fmt": fmt_time(j["started_at"]),
+            "finished_at": j.get("finished_at"),
+            "finished_at_fmt": fmt_time(j.get("finished_at")) if j.get("finished_at") else None,
+            "duration_sec": (j.get("finished_at") or int(time.time())) - j["started_at"],
+            "output_file": Path(j["output_file"]).name if j.get("output_file") else None,
+            "returncode": j.get("returncode"),
+        })
+    return jsonify(lite)
+
+
+@app.get("/api/comments/jobs/<job_id>")
+def api_comments_job_status(job_id: str):
+    with _jobs_lock:
+        j = _comment_jobs.get(job_id)
+        if not j:
+            return jsonify({"error": "job 不存在或已被清理", "status": "unknown"}), 404
+        result = dict(j)
+    # 附上下载文件名
+    if result.get("output_file"):
+        result["download_name"] = Path(result["output_file"]).name
+    result["started_at_fmt"] = fmt_time(result["started_at"])
+    if result.get("finished_at"):
+        result["finished_at_fmt"] = fmt_time(result["finished_at"])
+        result["duration_sec"] = result["finished_at"] - result["started_at"]
+    else:
+        result["duration_sec"] = int(time.time()) - result["started_at"]
+    return jsonify(result)
 
 
 @app.get("/api/comments/download/<filename>")
