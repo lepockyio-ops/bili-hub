@@ -222,10 +222,61 @@ def comments_list_outputs():
 # ============================================================================
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
-# --- 后台任务系统（评论抓取用）---
+# --- 后台任务系统 ---
 import random as _rnd
 _comment_jobs = {}  # {job_id: {status, bvid, args, started_at, finished_at, output_file, stdout, stderr, returncode}}
 _jobs_lock = threading.Lock()
+
+# v1.4: 通用后台任务（用于 watch check / refresh-names 等）
+_bg_jobs = {}  # {job_id: {kind, status, started_at, finished_at, ...}}
+_bg_lock = threading.Lock()
+
+
+def _bg_job_start(kind: str, meta: dict, worker_fn):
+    """启动一个通用后台任务。worker_fn() 返回 dict 会 merge 到 job。"""
+    job_id = f"{kind}-{int(time.time() * 1000)}-{_rnd.randint(1000, 9999)}"
+    with _bg_lock:
+        _bg_jobs[job_id] = {
+            "id": job_id,
+            "kind": kind,
+            "status": "queued",
+            "started_at": int(time.time()),
+            "finished_at": None,
+            **meta,
+        }
+
+    def _run():
+        with _bg_lock:
+            if job_id in _bg_jobs:
+                _bg_jobs[job_id]["status"] = "running"
+        try:
+            result = worker_fn() or {}
+            with _bg_lock:
+                if job_id in _bg_jobs:
+                    _bg_jobs[job_id]["status"] = "done"
+                    _bg_jobs[job_id]["finished_at"] = int(time.time())
+                    _bg_jobs[job_id].update(result)
+        except Exception as e:
+            with _bg_lock:
+                if job_id in _bg_jobs:
+                    _bg_jobs[job_id]["status"] = "failed"
+                    _bg_jobs[job_id]["finished_at"] = int(time.time())
+                    _bg_jobs[job_id]["error"] = str(e)
+
+    _prune_bg_jobs()
+    threading.Thread(target=_run, daemon=True).start()
+    return job_id
+
+
+def _prune_bg_jobs(max_keep: int = 30):
+    with _bg_lock:
+        if len(_bg_jobs) <= max_keep:
+            return
+        sorted_ids = sorted(_bg_jobs.keys(),
+                            key=lambda k: _bg_jobs[k].get("started_at", 0),
+                            reverse=True)
+        for k in sorted_ids[max_keep:]:
+            del _bg_jobs[k]
 
 
 def _make_job_id() -> str:
@@ -383,20 +434,123 @@ def api_watch_remove(uid: int):
 
 @app.post("/api/watch/check")
 def api_watch_check():
+    """v1.4: 转为后台任务模式。立刻返回 job_id；前端应轮询 /api/jobs/<id>。"""
     if not (WATCH_DIR / "biliwatch.py").exists():
         return jsonify({"error": "biliwatch.py 不存在"}), 500
-    r = run_tool(WATCH_DIR, ["biliwatch.py", "check"], timeout=600)
-    # 提取 NEW | 行
-    new_videos = []
-    for line in r["stdout"].splitlines():
-        if line.startswith("NEW | "):
-            new_videos.append(line[6:])
+
+    subs_count = len(watch_load_config().get("subscriptions") or [])
+
+    def worker():
+        r = run_tool(WATCH_DIR, ["biliwatch.py", "check"], timeout=1800)
+        new_videos = []
+        errors = []
+        for line in (r.get("stdout") or "").splitlines():
+            if line.startswith("NEW | "):
+                new_videos.append(line[6:])
+            elif line.startswith("ERR | "):
+                errors.append(line[6:])
+        return {
+            "returncode": r.get("returncode"),
+            "stdout": r.get("stdout", ""),
+            "stderr": r.get("stderr", ""),
+            "new_videos": new_videos,
+            "errors": errors,
+        }
+
+    job_id = _bg_job_start("watch-check", {"subs_count": subs_count}, worker)
     return jsonify({
-        "returncode": r["returncode"],
-        "stdout": r["stdout"],
-        "stderr": r["stderr"],
-        "new_videos": new_videos,
+        "job_id": job_id,
+        "status": "queued",
+        "subs_count": subs_count,
+        "message": f"检查 {subs_count} 个订阅的后台任务已启动",
     })
+
+
+@app.post("/api/watch/refresh-names")
+def api_watch_refresh_names():
+    """v1.4: 批量拉真实 B 站用户名并更新 config。异步后台任务。"""
+    cfg_snapshot = watch_load_config()
+    subs = cfg_snapshot.get("subscriptions") or []
+    if not subs:
+        return jsonify({"error": "无订阅"}), 400
+
+    def worker():
+        cfg = watch_load_config()
+        subs = cfg.get("subscriptions") or []
+        updated = 0
+        failed = 0
+        details = []
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://www.bilibili.com/",
+        }
+        # 用 httpx 一次性拉取
+        try:
+            import httpx as _hx
+        except ImportError:
+            return {"error": "缺少 httpx", "updated": 0, "failed": len(subs), "total": len(subs)}
+        with _hx.Client(timeout=10.0, headers=headers, follow_redirects=True) as c:
+            try:
+                c.get("https://www.bilibili.com/")
+            except Exception:
+                pass
+            for s in subs:
+                mid = s["uid"]
+                try:
+                    r = c.get("https://api.bilibili.com/x/web-interface/card",
+                              params={"mid": mid})
+                    data = r.json()
+                    if data.get("code") == 0:
+                        real_name = (data.get("data") or {}).get("card", {}).get("name") or ""
+                        if real_name and s.get("name") != real_name:
+                            details.append(f"{mid}: {s.get('name')} → {real_name}")
+                            s["name"] = real_name
+                            updated += 1
+                    else:
+                        failed += 1
+                        details.append(f"{mid}: API code={data.get('code')}")
+                except Exception as e:
+                    failed += 1
+                    details.append(f"{mid}: 异常 {e}")
+                time.sleep(0.4)  # 防风控
+        watch_save_config(cfg)
+        return {
+            "updated": updated,
+            "failed": failed,
+            "total": len(subs),
+            "details": details[:50],  # 只留前 50 条日志
+        }
+
+    job_id = _bg_job_start("watch-refresh-names", {"total": len(subs)}, worker)
+    return jsonify({
+        "job_id": job_id,
+        "status": "queued",
+        "message": f"刷新 {len(subs)} 个 UP 用户名的后台任务已启动",
+    })
+
+
+@app.get("/api/jobs")
+def api_jobs_list():
+    with _bg_lock:
+        jobs = list(_bg_jobs.values())
+    jobs.sort(key=lambda j: j.get("started_at", 0), reverse=True)
+    return jsonify(jobs)
+
+
+@app.get("/api/jobs/<job_id>")
+def api_jobs_get(job_id: str):
+    with _bg_lock:
+        j = _bg_jobs.get(job_id)
+        if not j:
+            return jsonify({"error": "job 不存在或已被清理", "status": "unknown"}), 404
+        result = dict(j)
+    result["started_at_fmt"] = fmt_time(result.get("started_at"))
+    if result.get("finished_at"):
+        result["finished_at_fmt"] = fmt_time(result.get("finished_at"))
+        result["duration_sec"] = result["finished_at"] - result["started_at"]
+    else:
+        result["duration_sec"] = int(time.time()) - result["started_at"]
+    return jsonify(result)
 
 
 # ================= Radar API =================

@@ -104,24 +104,31 @@ async function loadWatch() {
       box.innerHTML = '<div class="empty">暂无订阅。用上方表单添加你的第一个 UP 主。</div>';
       return;
     }
-    box.innerHTML = subs.map(s => `
-      <div class="item">
-        <div class="info">
-          <div class="item-title">
-            ${escapeHtml(s.name)}
-            ${s.last_bvid ? `<span class="badge success">最新: ${s.last_bvid.slice(0, 12)}</span>` : ''}
+    box.innerHTML = subs.map(s => {
+      // 判断是否是占位名字（UIDxxxx）
+      const isPlaceholder = /^UID\d+$/.test(s.name || "");
+      const displayName = isPlaceholder
+        ? `<span style="color: var(--text-dim); font-style: italic;">${escapeHtml(s.name)}</span> <span class="badge warn" title="尚未拉取到真实用户名，请点顶部「刷新用户名」">未识别</span>`
+        : escapeHtml(s.name);
+      return `
+        <div class="item">
+          <div class="info">
+            <div class="item-title">
+              ${displayName}
+              ${s.last_bvid ? `<span class="badge success">最新: ${s.last_bvid.slice(0, 12)}</span>` : ''}
+            </div>
+            <div class="item-sub">
+              UID <a href="${s.space_url}" target="_blank">${s.uid}</a>
+              · 最新投稿: ${s.last_created_fmt || '—'}
+              · 上次检查: ${s.checked_at_fmt || '—'}
+            </div>
           </div>
-          <div class="item-sub">
-            UID ${s.uid} · <a href="${s.space_url}" target="_blank">B站空间</a>
-            · 最新投稿: ${s.last_created_fmt || '—'}
-            · 上次检查: ${s.checked_at_fmt || '—'}
+          <div class="item-actions">
+            <button class="btn danger small" onclick="watchRemove(${s.uid})">删除</button>
           </div>
         </div>
-        <div class="item-actions">
-          <button class="btn danger small" onclick="watchRemove(${s.uid})">删除</button>
-        </div>
-      </div>
-    `).join("");
+      `;
+    }).join("");
     loadSummary();
   } catch (e) {
     document.getElementById("watch-list").innerHTML = `<div class="alert danger">加载失败: ${e.message}</div>`;
@@ -163,20 +170,104 @@ async function watchRemove(uid) {
   loadWatch();
 }
 
+/**
+ * v1.4: 后台异步检查全部订阅。立刻返回，不阻塞界面。
+ */
 async function watchCheck() {
-  showLoading("正在检查所有订阅（约 30-90s）...");
+  requestNotifyPermission();
   try {
     const r = await api("/api/watch/check", {method: "POST"});
-    document.getElementById("watch-result-content").textContent = r.stdout + (r.stderr ? "\n---\nSTDERR:\n" + r.stderr : "");
-    document.getElementById("watch-result").style.display = "block";
-    if (r.new_videos && r.new_videos.length > 0) {
-      alert(`🎉 发现 ${r.new_videos.length} 个新稿件！\n\n` + r.new_videos.slice(0, 5).join("\n"));
+    if (r.error) { toast("danger", "启动失败", r.error); return; }
+    if (r.job_id) {
+      const secs = Math.round((r.subs_count || 1) * 8);
+      toast(
+        "info",
+        "🔍 检查已开始",
+        `<strong>${r.subs_count}</strong> 个订阅在后台运行中，预计约 ${secs}s 完成<br>你可以继续操作其他功能。`,
+        6000,
+      );
+      pollBgJob(r.job_id, "watch-check");
+    }
+  } catch (e) {
+    toast("danger", "启动失败", e.message);
+  }
+}
+
+/**
+ * v1.4: 刷新所有 UP 的真实 B 站用户名。异步后台。
+ */
+async function refreshWatchNames() {
+  try {
+    const r = await api("/api/watch/refresh-names", {method: "POST"});
+    if (r.error) { toast("danger", "启动失败", r.error); return; }
+    if (r.job_id) {
+      toast("info", "🏷️ 正在拉取用户名",
+        `后台运行中（约 ${Math.ceil(document.getElementById('watch-count').textContent * 0.5)}s）`,
+        5000);
+      pollBgJob(r.job_id, "refresh-names");
+    }
+  } catch (e) {
+    toast("danger", "启动失败", e.message);
+  }
+}
+
+/**
+ * v1.4: 通用后台任务轮询器
+ */
+const _pollingBgJobs = new Set();
+async function pollBgJob(jobId, kind) {
+  if (_pollingBgJobs.has(jobId)) return;
+  _pollingBgJobs.add(jobId);
+  while (true) {
+    try {
+      await sleep(3000);
+      const j = await api(`/api/jobs/${jobId}`);
+      if (!j || j.status === "unknown") break;
+      if (j.status === "done") {
+        onBgJobDone(kind, j);
+        break;
+      }
+      if (j.status === "failed") {
+        toast("danger", "✗ 任务失败", escapeHtml((j.stderr || j.error || "").slice(0, 200) || "查看服务器日志"));
+        break;
+      }
+    } catch (e) {
+      console.error("poll bg err:", e);
+      break;
+    }
+  }
+  _pollingBgJobs.delete(jobId);
+}
+
+function onBgJobDone(kind, j) {
+  if (kind === "watch-check") {
+    const newVideos = j.new_videos || [];
+    const errs = j.errors || [];
+    if (newVideos.length > 0) {
+      const list = newVideos.slice(0, 10).map(v => escapeHtml(v)).join("<br>");
+      toast("success", `🎉 发现 ${newVideos.length} 个新稿件！`,
+        list + (newVideos.length > 10 ? `<br>...还有 ${newVideos.length - 10} 条` : ""), 30000);
+      notify("BiliWatch · 发现新稿件", `共 ${newVideos.length} 个新稿件`);
+    } else {
+      toast("info", "✓ 检查完成", `${j.subs_count} 个订阅均为最新，无新稿件`, 5000);
+    }
+    if (errs.length > 0) {
+      toast("warn", `⚠️ ${errs.length} 个订阅采集失败`,
+        errs.slice(0, 5).map(e => escapeHtml(e)).join("<br>") +
+          (errs.length > 5 ? `<br>...还有 ${errs.length - 5} 条` : ""), 12000);
+    }
+    if (j.stdout) {
+      showResult("watch-result", (j.stdout || "") + (j.stderr ? "\n---\nSTDERR:\n" + j.stderr : ""));
     }
     loadWatch();
-  } catch (e) {
-    alert("检查失败: " + e.message);
-  } finally {
-    hideLoading();
+  } else if (kind === "refresh-names") {
+    toast("success", "🏷️ 用户名刷新完成",
+      `更新 <strong>${j.updated}</strong> / ${j.total}` + (j.failed ? ` · 失败 ${j.failed}` : ""),
+      8000);
+    if (j.details && j.details.length > 0) {
+      showResult("watch-result", "刷新用户名日志:\n" + j.details.join("\n"));
+    }
+    loadWatch();
   }
 }
 
