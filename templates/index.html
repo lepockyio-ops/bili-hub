@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>BiliHub — B站Vocaloid运营控制台</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<aside class="sidebar">
+  <div class="logo">🎯 BiliHub</div>
+  <div class="subtitle">Vocaloid 运营控制台</div>
+  <nav>
+    <a href="#home" class="nav-item active" data-tab="home">
+      <span class="icon">🏠</span> 首页概览
+    </a>
+    <a href="#watch" class="nav-item" data-tab="watch">
+      <span class="icon">👀</span> UP 主监控
+    </a>
+    <a href="#radar" class="nav-item" data-tab="radar">
+      <span class="icon">📊</span> 数据雷达
+    </a>
+    <a href="#comments" class="nav-item" data-tab="comments">
+      <span class="icon">💬</span> 评论收集
+    </a>
+  </nav>
+  <div class="sidebar-footer">
+    <div class="version">v1.0</div>
+    <a href="https://github.com/lepockyio-ops/bili-hub" target="_blank" class="gh-link">GitHub ↗</a>
+  </div>
+</aside>
+
+<main class="main">
+
+  <!-- ============ 首页 ============ -->
+  <section id="home" class="tab active">
+    <header class="tab-header">
+      <h1>首页概览</h1>
+      <p class="subtitle">三大工具状态一览 + 快捷入口</p>
+    </header>
+    <div id="summary-cards" class="summary-cards"></div>
+    <div class="tips">
+      <h3>💡 使用建议</h3>
+      <ul>
+        <li><strong>UP 主监控</strong>：加订阅 → 每 10 分钟自动检查是否有新投稿</li>
+        <li><strong>数据雷达</strong>：新曲发布后立刻加追踪 → 分钟级采集 → 24h 内判断能否上推荐</li>
+        <li><strong>评论收集</strong>：爆款曲抓评论 → 中→日 AI 翻译 → 给日方合作曲师看反馈</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ============ UP 监控 ============ -->
+  <section id="watch" class="tab">
+    <header class="tab-header">
+      <h1>👀 UP 主监控 · BiliWatch</h1>
+      <p class="subtitle">订阅 B 站 UP 主，一有新投稿立刻知道</p>
+    </header>
+
+    <div class="action-bar">
+      <button class="btn primary" onclick="watchCheck()">🔍 立即检查所有订阅</button>
+      <button class="btn" onclick="loadWatch()">🔄 刷新</button>
+    </div>
+
+    <div class="card">
+      <h3>添加新订阅</h3>
+      <div class="form-row">
+        <input type="text" id="watch-input" placeholder="B 站空间链接或 UID（如 https://space.bilibili.com/12345 或 12345）">
+        <input type="text" id="watch-name" placeholder="备注（可选）" style="max-width: 200px;">
+        <button class="btn primary" onclick="watchAdd()">➕ 添加</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>当前订阅 <span id="watch-count" class="count-badge">0</span></h3>
+      <div id="watch-list" class="list"></div>
+    </div>
+
+    <div class="card" id="watch-result" style="display:none;">
+      <h3>最近一次检查结果</h3>
+      <pre id="watch-result-content"></pre>
+    </div>
+  </section>
+
+  <!-- ============ 数据雷达 ============ -->
+  <section id="radar" class="tab">
+    <header class="tab-header">
+      <h1>📊 数据雷达 · BiliRadar</h1>
+      <p class="subtitle">追踪曲目播放/点赞/投币/收藏的时序数据 + 异常预警</p>
+    </header>
+
+    <div class="action-bar">
+      <button class="btn primary" onclick="radarCollect()">📥 立即采集</button>
+      <button class="btn" onclick="radarDashboard()">📈 生成看板</button>
+      <button class="btn" onclick="radarAlerts()">🚨 检查预警</button>
+      <button class="btn" onclick="loadRadar()">🔄 刷新</button>
+      <a class="btn" href="/api/radar/dashboard.html" target="_blank">📖 打开最新看板</a>
+    </div>
+
+    <div class="card">
+      <h3>追踪新曲目</h3>
+      <div class="form-row">
+        <input type="text" id="radar-input" placeholder="BVxxxxx 或 https://www.bilibili.com/video/BVxxx">
+        <input type="text" id="radar-note" placeholder="备注（可选）" style="max-width: 200px;">
+        <button class="btn primary" onclick="radarAdd()">➕ 开始追踪</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>追踪中的曲目 <span id="radar-count" class="count-badge">0</span></h3>
+      <div id="radar-list" class="list"></div>
+    </div>
+
+    <div class="card" id="radar-result" style="display:none;">
+      <h3>操作结果</h3>
+      <pre id="radar-result-content"></pre>
+    </div>
+  </section>
+
+  <!-- ============ 评论收集 ============ -->
+  <section id="comments" class="tab">
+    <header class="tab-header">
+      <h1>💬 评论收集 · BiliComments v2</h1>
+      <p class="subtitle">抓评论 + AI 日语翻译 + 意图分类 + 推荐日语回复</p>
+    </header>
+
+    <div class="card">
+      <h3>提取视频评论</h3>
+      <div class="form-row">
+        <input type="text" id="comm-bvid" placeholder="BVxxxxx 或视频链接">
+      </div>
+      <div class="form-row options">
+        <label>
+          页数：
+          <input type="number" id="comm-pages" value="1" min="1" max="50" style="width:70px;">
+        </label>
+        <label>
+          排序：
+          <select id="comm-sort">
+            <option value="hot" selected>热度</option>
+            <option value="new">时间</option>
+            <option value="up-only">仅 UP</option>
+          </select>
+        </label>
+        <label>翻译语言：
+          <select id="comm-lang">
+            <option value="ja" selected>日语</option>
+            <option value="en">英语</option>
+            <option value="ko">韩语</option>
+            <option value="zh-TW">繁中</option>
+          </select>
+        </label>
+        <label><input type="checkbox" id="comm-replies"> 含楼中楼</label>
+        <label><input type="checkbox" id="comm-no-trans"> 关翻译</label>
+        <label><input type="checkbox" id="comm-no-reply"> 关回复推荐</label>
+      </div>
+      <div class="form-row">
+        <button class="btn primary" onclick="commentsExtract()">🚀 开始提取</button>
+        <span class="hint">默认 1 页 ≈ 20 条热门评论。要拿全量评论请配置 SESSDATA（见 bili-comments/.env）</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>历史输出文件 <button class="btn small" onclick="loadCommentsOutputs()">🔄</button></h3>
+      <div id="comments-outputs" class="list"></div>
+    </div>
+
+    <div class="card" id="comm-result" style="display:none;">
+      <h3>提取结果</h3>
+      <pre id="comm-result-content"></pre>
+    </div>
+  </section>
+
+  <!-- 全局 loading 遮罩 -->
+  <div id="loading" class="loading-overlay" style="display:none;">
+    <div class="spinner"></div>
+    <div id="loading-text" class="loading-text">处理中...</div>
+  </div>
+
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
