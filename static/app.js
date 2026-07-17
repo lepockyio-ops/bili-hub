@@ -104,23 +104,32 @@ async function loadWatch() {
       box.innerHTML = '<div class="empty">暂无订阅。用上方表单添加你的第一个 UP 主。</div>';
       return;
     }
+    // v1.5: 48h 内有新投稿 → 高亮标记
+    const nowSec = Math.floor(Date.now() / 1000);
+    const RECENT_WINDOW = 48 * 3600;
     box.innerHTML = subs.map(s => {
-      // 判断是否是占位名字（UIDxxxx）
       const isPlaceholder = /^UID\d+$/.test(s.name || "");
       const displayName = isPlaceholder
         ? `<span style="color: var(--text-dim); font-style: italic;">${escapeHtml(s.name)}</span> <span class="badge warn" title="尚未拉取到真实用户名，请点顶部「刷新用户名」">未识别</span>`
         : escapeHtml(s.name);
+      // 判断 48h 内是否有新投稿
+      const isRecent = s.last_created_ts && (nowSec - s.last_created_ts) <= RECENT_WINDOW;
+      const hoursAgo = s.last_created_ts ? Math.round((nowSec - s.last_created_ts) / 3600) : null;
+      const recentBadge = isRecent
+        ? `<span class="badge fresh" title="过去 48h 内的新投稿">🔥 ${hoursAgo}h 前</span>`
+        : '';
+      const itemClass = isRecent ? 'item item-recent' : 'item';
       return `
-        <div class="item">
+        <div class="${itemClass}">
           <div class="info">
             <div class="item-title">
               ${displayName}
-              ${s.last_bvid ? `<span class="badge success">最新: ${s.last_bvid.slice(0, 12)}</span>` : ''}
+              ${recentBadge}
+              ${s.last_bvid ? `<a href="https://www.bilibili.com/video/${s.last_bvid}" target="_blank" class="badge success" style="text-decoration:none;">最新: ${s.last_bvid.slice(0, 12)}</a>` : ''}
             </div>
             <div class="item-sub">
               UID <a href="${s.space_url}" target="_blank">${s.uid}</a>
               · 最新投稿: ${s.last_created_fmt || '—'}
-              · 上次检查: ${s.checked_at_fmt || '—'}
             </div>
           </div>
           <div class="item-actions">
