@@ -21,7 +21,7 @@ document.querySelectorAll(".nav-item").forEach(el => {
 // 支持初始 hash 定位
 window.addEventListener("load", () => {
   const hash = (window.location.hash || "#home").slice(1);
-  if (["home", "watch", "radar", "comments"].includes(hash)) {
+  if (["home", "watch", "radar", "comments", "report"].includes(hash)) {
     switchTab(hash);
   }
   loadSummary();
@@ -29,8 +29,11 @@ window.addEventListener("load", () => {
   loadRadar();
   loadCommentsOutputs();
   loadCommentJobs();
+  loadReportOutputs();
+  loadReportJobs();
   // 恢复未完成的 job 轮询（例如页面刷新后）
   resumePollingRunningJobs();
+  resumePollingReportJobs();
 });
 
 // ------------- Loading 遮罩 -------------
@@ -70,6 +73,11 @@ async function loadSummary() {
       <div class="label">💬 评论文件</div>
       <div class="value warn">${s.comments.output_files}</div>
       <div class="sub">最新: ${s.comments.latest_file || "(无)"}</div>
+    </div>`);
+    cards.push(`<div class="stat-card">
+      <div class="label">📄 曲师报告</div>
+      <div class="value" style="color:#ec4899;">${(s.report && s.report.output_files) || 0}</div>
+      <div class="sub">最新: ${(s.report && s.report.latest_file) || "(无)"}</div>
     </div>`);
     // 邻居状态
     const missing = Object.entries(s.neighbors).filter(([_, ok]) => !ok).map(([k]) => k);
@@ -662,6 +670,202 @@ async function deleteCommentOutput(filename) {
   } catch (e) {
     toast("danger", "删除失败", e.message);
   }
+}
+
+// ============================================================================
+// v1.6 · Creator Report
+// ============================================================================
+async function reportGenerate() {
+  const raw = document.getElementById("report-uid").value.trim();
+  if (!raw) { toast("warn", "缺少 UID", "请填曲师 UID（一行一个）"); return; }
+  requestNotifyPermission();
+
+  const payload = {
+    uid: raw,
+    videos_limit: parseInt(document.getElementById("report-videos").value) || 15,
+    months: document.getElementById("report-months").value || null,
+  };
+  try {
+    const r = await api("/api/report/generate", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload)
+    });
+    if (r.error) { toast("danger", "提交失败", r.error); return; }
+    const jobs = r.jobs || [];
+    if (jobs.length === 0) { toast("warn", "未创建任务", "请检查输入"); return; }
+
+    if (jobs.length > 1) {
+      toast("info", `🚀 ${jobs.length} 份报告已提交`,
+        `全部后台并发生成，完成会一个个弹出。<br>你可以继续操作其他功能。`, 8000);
+    } else {
+      const j = jobs[0];
+      toast("info", "🚀 报告生成中",
+        `<strong>${escapeHtml(j.name)}</strong> (UID ${j.uid})<br>约 30-90 秒后弹出通知`, 6000);
+    }
+    for (const j of jobs) {
+      pollReportJob(j.job_id, j.uid, j.name);
+    }
+    loadReportJobs();
+    document.getElementById("report-uid").value = "";
+  } catch (e) {
+    toast("danger", "提交失败", e.message);
+  }
+}
+
+const _pollingReportJobs = new Set();
+async function pollReportJob(jobId, uid, name) {
+  if (_pollingReportJobs.has(jobId)) return;
+  _pollingReportJobs.add(jobId);
+  while (true) {
+    try {
+      await sleep(4000);
+      const j = await api(`/api/jobs/${jobId}`);
+      if (!j || j.status === "unknown") break;
+      loadReportJobs();
+      if (j.status === "done") {
+        const filename = j.output_file ? j.output_file.split(/[\\/]/).pop() : null;
+        toast("success", "✓ 报告已生成",
+          `<strong>${escapeHtml(name)}</strong> (UID ${uid})<br>` +
+          (filename
+            ? `<a href="/api/report/download/${encodeURIComponent(filename)}" target="_blank" class="btn primary small" style="margin-top:6px;">🌐 在浏览器打开</a>`
+            : ""),
+          25000);
+        notify(`✓ 曲师报告已生成 · ${name}`, filename || "");
+        loadReportOutputs();
+        loadSummary();
+        break;
+      }
+      if (j.status === "failed") {
+        toast("danger", `✗ ${escapeHtml(name)} 报告生成失败`,
+          escapeHtml((j.stderr || j.error || "").slice(0, 200)) || "查看服务器日志",
+          20000);
+        break;
+      }
+    } catch (e) {
+      console.error("poll report job err:", e);
+      break;
+    }
+  }
+  _pollingReportJobs.delete(jobId);
+}
+
+async function resumePollingReportJobs() {
+  try {
+    const jobs = await api("/api/jobs");
+    for (const j of (jobs || [])) {
+      if (j.kind === "creator-report" && (j.status === "queued" || j.status === "running")) {
+        pollReportJob(j.id, j.uid, j.name || `UID${j.uid}`);
+      }
+    }
+  } catch (e) { /* ignore */ }
+}
+
+async function loadReportJobs() {
+  try {
+    const jobs = await api("/api/jobs");
+    const reportJobs = (jobs || []).filter(j => j.kind === "creator-report").slice(0, 8);
+    const box = document.getElementById("report-jobs");
+    if (!box) return;
+    if (reportJobs.length === 0) {
+      box.innerHTML = '<div class="empty">暂无任务。填入 UID 后点「开始生成」即可。</div>';
+      return;
+    }
+    box.innerHTML = reportJobs.map(j => {
+      const statusText = ({queued:"排队中",running:"运行中",done:"已完成",failed:"失败"})[j.status] || j.status;
+      const dur = j.duration_sec ? `${j.duration_sec}s` : '';
+      let action = '';
+      if (j.output_file) {
+        const fn = j.output_file.split(/[\\/]/).pop();
+        action = `<a class="btn primary small" href="/api/report/download/${encodeURIComponent(fn)}" target="_blank">🌐 打开</a>`;
+      }
+      return `
+        <div class="item">
+          <div class="info">
+            <div class="item-title">
+              <span class="job-status ${j.status}">${statusText}</span>
+              ${escapeHtml(j.name || 'UID' + j.uid)}
+            </div>
+            <div class="item-sub">
+              UID ${j.uid} · ${j.videos_limit || 15} 首 · 开始 ${j.started_at_fmt || fmt_ts(j.started_at)}
+              ${j.finished_at_fmt ? ` · 用时 ${dur}` : ` · 已跑 ${dur}`}
+            </div>
+          </div>
+          <div class="item-actions">${action}</div>
+        </div>
+      `;
+    }).join("");
+  } catch (e) {
+    document.getElementById("report-jobs").innerHTML = `<div class="alert danger">加载失败: ${e.message}</div>`;
+  }
+}
+
+async function loadReportOutputs() {
+  try {
+    const files = await api("/api/report/list");
+    const box = document.getElementById("report-outputs");
+    if (!box) return;
+    if ((files || []).length === 0) {
+      box.innerHTML = '<div class="empty">暂无报告。填入 UID 后点「开始生成」即可。</div>';
+      return;
+    }
+    box.innerHTML = files.slice(0, 30).map(f => `
+      <div class="item">
+        <div class="info">
+          <div class="item-title">${escapeHtml(f.creator_name || f.name)}</div>
+          <div class="item-sub">
+            ${f.uid ? `UID ${f.uid} · ` : ''}${f.size_kb} KB · 生成于 ${f.mtime}
+          </div>
+        </div>
+        <div class="item-actions">
+          <a class="btn primary small" href="/api/report/download/${encodeURIComponent(f.name)}" target="_blank">🌐 打开</a>
+          <button class="btn danger small" onclick="deleteReport('${f.name.replace(/'/g, "\\'")}')">🗑</button>
+        </div>
+      </div>
+    `).join("");
+  } catch (e) {
+    document.getElementById("report-outputs").innerHTML = `<div class="alert danger">加载失败: ${e.message}</div>`;
+  }
+}
+
+async function deleteReport(filename) {
+  if (!confirm(`🗑 删除报告 ${filename}？\n\n此操作不可恢复！`)) return;
+  try {
+    const r = await api(`/api/report/download/${encodeURIComponent(filename)}`, {method: "DELETE"});
+    if (r.ok) {
+      toast("success", "🗑 已删除", escapeHtml(filename));
+      loadReportOutputs();
+      loadSummary();
+    } else {
+      toast("danger", "删除失败", r.error || "");
+    }
+  } catch (e) {
+    toast("danger", "删除失败", e.message);
+  }
+}
+
+/**
+ * 从订阅列表快速填入 UID
+ */
+async function openWatchPicker() {
+  try {
+    const subs = await api("/api/watch/subs");
+    if (!subs || subs.length === 0) {
+      toast("warn", "无订阅", "请先到 UP 主监控 tab 添加订阅");
+      return;
+    }
+    const lines = subs.map(s => s.uid).join("\n");
+    document.getElementById("report-uid").value = lines;
+    toast("info", `📋 已填入 ${subs.length} 个 UID`,
+      "点「开始生成」即可批量为全部签约曲师生成报告", 5000);
+  } catch (e) {
+    toast("danger", "读取订阅失败", e.message);
+  }
+}
+
+function fmt_ts(ts) {
+  if (!ts) return '—';
+  return new Date(ts * 1000).toLocaleString('zh-CN');
 }
 
 // ============================================================================

@@ -48,6 +48,7 @@ BASE_DIR = HUB_DIR.parent
 WATCH_DIR = BASE_DIR / "biliwatch"
 RADAR_DIR = BASE_DIR / "biliradar"
 COMMENTS_DIR = BASE_DIR / "bili-comments"
+REPORT_DIR = BASE_DIR / "bili-creator-report"  # v1.6 新增
 OUTPUTS_DIR = HUB_DIR / "outputs"
 
 CST = timezone(timedelta(hours=8))
@@ -59,6 +60,7 @@ def _check_neighbors():
         ("biliwatch", WATCH_DIR),
         ("biliradar", RADAR_DIR),
         ("bili-comments", COMMENTS_DIR),
+        ("bili-creator-report", REPORT_DIR),
     ]:
         if not p.exists():
             missing.append(f"  · {name}: 期望路径 {p}")
@@ -66,7 +68,7 @@ def _check_neighbors():
         print("⚠️  以下工具目录不存在（部分功能会失效）：")
         for m in missing:
             print(m)
-        print("将 BiliWatch/BiliRadar/BiliComments 三个目录放到与 bili-hub 同级即可。\n")
+        print("将四个邻居目录放到与 bili-hub 同级即可。\n")
 
 
 # ============================================================================
@@ -334,6 +336,8 @@ def health():
         "radar_ok": RADAR_DIR.exists(),
         "comments_dir": str(COMMENTS_DIR),
         "comments_ok": COMMENTS_DIR.exists(),
+        "report_dir": str(REPORT_DIR),
+        "report_ok": REPORT_DIR.exists(),
     })
 
 
@@ -784,6 +788,7 @@ def api_summary():
     watch_state = watch_load_state().get("ups", {})
     radar_tracks = radar_list_tracks()
     comments_files = comments_list_outputs()
+    report_files = report_list_outputs()
 
     return jsonify({
         "watch": {
@@ -800,12 +805,154 @@ def api_summary():
             "latest_file": comments_files[0]["name"] if comments_files else None,
             "latest_time": comments_files[0]["mtime"] if comments_files else None,
         },
+        "report": {
+            "output_files": len(report_files),
+            "latest_file": report_files[0]["name"] if report_files else None,
+            "latest_time": report_files[0]["mtime"] if report_files else None,
+        },
         "neighbors": {
             "biliwatch": WATCH_DIR.exists(),
             "biliradar": RADAR_DIR.exists(),
             "bili-comments": COMMENTS_DIR.exists(),
+            "bili-creator-report": REPORT_DIR.exists(),
         }
     })
+
+
+# ============================================================================
+# BiliCreatorReport (v1.6 新增)
+# ============================================================================
+def report_list_outputs() -> list[dict]:
+    """列出所有生成过的 HTML 报告。"""
+    d = REPORT_DIR / "output"
+    if not d.exists():
+        return []
+    files = []
+    for f in sorted(d.glob("*.html"), key=lambda p: p.stat().st_mtime, reverse=True):
+        stat = f.stat()
+        # 从文件名解析 UID（格式：{name}_{uid}_{date}.html）
+        stem = f.stem
+        parts = stem.rsplit("_", 2)
+        uid = None
+        creator_name = stem
+        if len(parts) == 3:
+            creator_name = parts[0]
+            try:
+                uid = int(parts[1])
+            except Exception:
+                pass
+        files.append({
+            "name": f.name,
+            "creator_name": creator_name,
+            "uid": uid,
+            "size_kb": round(stat.st_size / 1024, 1),
+            "mtime": fmt_time(stat.st_mtime),
+            "mtime_ts": int(stat.st_mtime),
+        })
+    return files
+
+
+@app.get("/api/report/list")
+def api_report_list():
+    return jsonify(report_list_outputs())
+
+
+@app.post("/api/report/generate")
+def api_report_generate():
+    """
+    支持批量：uid 可以是数组或字符串（换行分隔）。
+    每个 UID 生成独立后台任务。
+    """
+    data = request.get_json(silent=True) or {}
+    raw = data.get("uid", "")
+    videos_limit = int(data.get("videos_limit") or 15)
+    months = data.get("months")  # 可选
+
+    if not (REPORT_DIR / "generate_report.py").exists():
+        return jsonify({"error": "generate_report.py 不存在，请检查 bili-creator-report 目录"}), 500
+
+    # 支持批量
+    items = _split_batch(raw)
+    if not items:
+        return jsonify({"error": "缺少 uid"}), 400
+
+    # 每个 UID 都必须是纯数字
+    uids = []
+    invalid = []
+    for it in items:
+        try:
+            uids.append(int(it))
+        except ValueError:
+            invalid.append(it)
+    if invalid:
+        return jsonify({"error": f"以下不是合法 UID: {', '.join(invalid)}"}), 400
+
+    # 尝试从 watch 订阅列表拉出对应曲师名（用于日志显示）
+    watch_subs = {s["uid"]: s.get("name", f"UID{s['uid']}") for s in (watch_load_config().get("subscriptions") or [])}
+
+    jobs = []
+    for uid in uids:
+        name = watch_subs.get(uid, f"UID{uid}")
+        args = ["generate_report.py", str(uid), "--videos-limit", str(videos_limit)]
+        if months:
+            args += ["--months", str(int(months))]
+
+        def make_worker(a):
+            def worker():
+                r = run_tool(REPORT_DIR, a, timeout=1800)
+                # 从 stdout 里提取输出文件路径
+                output_file = None
+                for line in (r.get("stdout") or "").splitlines():
+                    m = re.search(r"报告已生成：(.+\.html)", line)
+                    if m:
+                        output_file = m.group(1).strip()
+                        break
+                return {
+                    "returncode": r.get("returncode"),
+                    "stdout": r.get("stdout", ""),
+                    "stderr": r.get("stderr", ""),
+                    "output_file": output_file,
+                }
+            return worker
+
+        job_id = _bg_job_start(
+            "creator-report",
+            {"uid": uid, "name": name, "videos_limit": videos_limit},
+            make_worker(args),
+        )
+        jobs.append({"job_id": job_id, "uid": uid, "name": name})
+
+    return jsonify({
+        "jobs": jobs,
+        "count": len(jobs),
+        "status": "queued",
+        "message": f"{len(jobs)} 份报告已在后台开始生成",
+    })
+
+
+@app.get("/api/report/download/<filename>")
+def api_report_download(filename: str):
+    if not filename.endswith(".html") or "/" in filename or "\\" in filename or ".." in filename:
+        abort(400)
+    p = REPORT_DIR / "output" / filename
+    if not p.exists():
+        abort(404)
+    # 用 inline 让浏览器直接渲染而非下载
+    return send_file(str(p), mimetype="text/html; charset=utf-8")
+
+
+@app.delete("/api/report/download/<filename>")
+def api_report_delete_file(filename: str):
+    if not filename.endswith(".html") or "/" in filename or "\\" in filename or ".." in filename:
+        return jsonify({"error": "不合法的文件名"}), 400
+    p = REPORT_DIR / "output" / filename
+    if not p.exists():
+        return jsonify({"error": "文件不存在"}), 404
+    try:
+        p.unlink()
+        return jsonify({"ok": True, "deleted": filename})
+    except Exception as e:
+        return jsonify({"error": f"删除失败: {e}"}), 500
 
 
 # ============================================================================

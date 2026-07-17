@@ -23,6 +23,9 @@
     <a href="#comments" class="nav-item" data-tab="comments">
       <span class="icon">💬</span> 评论收集
     </a>
+    <a href="#report" class="nav-item" data-tab="report">
+      <span class="icon">📄</span> 曲师报告
+    </a>
   </nav>
   <div class="sidebar-footer">
     <div class="version">v1.0</div>
@@ -171,6 +174,47 @@
     <div class="card" id="comm-result" style="display:none;">
       <h3>最近一次任务日志</h3>
       <pre id="comm-result-content"></pre>
+    </div>
+  </section>
+
+  <!-- ============ 曲师报告 ============ -->
+  <section id="report" class="tab">
+    <header class="tab-header">
+      <h1>📄 曲师报告 · CreatorReport</h1>
+      <p class="subtle">为签约曲师生成中日双语数据月报（HTML → PDF）· 给日方合作方看的专业报告</p>
+    </header>
+
+    <div class="card">
+      <h3>生成曲师报告 <span class="hint" style="padding:0;">（支持批量：一行一个 UID）</span></h3>
+      <textarea id="report-uid" rows="3" placeholder="一行一个 UID（曲师订阅列表里的 UID 数字）：&#10;3706963953191779&#10;3706942788733015"></textarea>
+      <div class="form-row options" style="margin-top:8px;">
+        <label>分析视频数：
+          <input type="number" id="report-videos" value="15" min="1" max="50" style="width:70px;">
+        </label>
+        <label>只看近月：
+          <select id="report-months">
+            <option value="">全部</option>
+            <option value="1">1 个月</option>
+            <option value="3">3 个月</option>
+            <option value="6">6 个月</option>
+          </select>
+        </label>
+      </div>
+      <div class="form-row" style="margin-top:8px; align-items:flex-start;">
+        <button class="btn primary" onclick="reportGenerate()">🚀 开始生成</button>
+        <button class="btn" onclick="openWatchPicker()">📋 从订阅列表选</button>
+        <span class="hint">每份报告约 30-90 秒（视频数越多越慢）</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>后台运行中的任务 <button class="btn small" onclick="loadReportJobs()">🔄</button></h3>
+      <div id="report-jobs" class="list"></div>
+    </div>
+
+    <div class="card">
+      <h3>历史报告 <button class="btn small" onclick="loadReportOutputs()">🔄</button></h3>
+      <div id="report-outputs" class="list"></div>
     </div>
   </section>
 
