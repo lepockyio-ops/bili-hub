@@ -307,24 +307,69 @@ def api_watch_list():
     return jsonify(subs)
 
 
+def _split_batch(raw) -> list[str]:
+    """接受字符串（含换行分隔）或列表，返回去空的字符串数组。"""
+    if isinstance(raw, list):
+        items = [str(x).strip() for x in raw]
+    else:
+        items = [line.strip() for line in str(raw or "").split("\n")]
+    # 过滤空行 + 支持逗号分隔（一行多个）
+    out = []
+    for it in items:
+        for sub in re.split(r"[,\s]+", it):
+            sub = sub.strip()
+            if sub:
+                out.append(sub)
+    # 去重（保持顺序）
+    seen = set()
+    dedup = []
+    for it in out:
+        if it not in seen:
+            seen.add(it)
+            dedup.append(it)
+    return dedup
+
+
 @app.post("/api/watch/subs")
 def api_watch_add():
+    """支持批量：JSON 中 uid_or_url 可以是数组，或字符串（换行/空格/逗号分隔）"""
     data = request.get_json(silent=True) or {}
-    raw = data.get("uid_or_url", "").strip()
-    name = data.get("name", "").strip()
-    if not raw:
+    raw = data.get("uid_or_url", "")
+    fallback_name = data.get("name", "").strip()
+    items = _split_batch(raw)
+    if not items:
         return jsonify({"error": "缺少 uid_or_url"}), 400
-    try:
-        mid = watch_parse_uid(raw)
-    except Exception as e:
-        return jsonify({"error": f"解析失败: {e}"}), 400
+
     cfg = watch_load_config()
-    for s in cfg.get("subscriptions") or []:
-        if s["uid"] == mid:
-            return jsonify({"error": "已在订阅列表", "uid": mid}), 400
-    cfg.setdefault("subscriptions", []).append({"uid": mid, "name": name or f"UID{mid}"})
-    watch_save_config(cfg)
-    return jsonify({"ok": True, "uid": mid, "name": name})
+    existing_uids = set(s["uid"] for s in (cfg.get("subscriptions") or []))
+    results = []
+    added_count = 0
+    for it in items:
+        try:
+            mid = watch_parse_uid(it)
+        except Exception as e:
+            results.append({"input": it, "status": "error", "error": str(e)})
+            continue
+        if mid in existing_uids:
+            results.append({"input": it, "uid": mid, "status": "duplicate"})
+            continue
+        existing_uids.add(mid)
+        name = fallback_name if (len(items) == 1 and fallback_name) else f"UID{mid}"
+        cfg.setdefault("subscriptions", []).append({"uid": mid, "name": name})
+        results.append({"input": it, "uid": mid, "name": name, "status": "added"})
+        added_count += 1
+
+    if added_count:
+        watch_save_config(cfg)
+
+    return jsonify({
+        "ok": True,
+        "total": len(items),
+        "added": added_count,
+        "duplicates": sum(1 for r in results if r["status"] == "duplicate"),
+        "errors": sum(1 for r in results if r["status"] == "error"),
+        "results": results,
+    })
 
 
 @app.delete("/api/watch/subs/<int:uid>")
@@ -362,19 +407,42 @@ def api_radar_list():
 
 @app.post("/api/radar/tracks")
 def api_radar_add():
+    """支持批量：JSON 中 bvid 可以是数组，或字符串（换行/空格/逗号分隔）"""
     data = request.get_json(silent=True) or {}
-    bvid = data.get("bvid", "").strip()
-    note = data.get("note", "").strip()
-    if not bvid:
+    raw = data.get("bvid", "")
+    fallback_note = data.get("note", "").strip()
+    items = _split_batch(raw)
+    if not items:
         return jsonify({"error": "缺少 bvid"}), 400
-    args = ["biliradar.py", "add", bvid]
-    if note:
-        args += ["--note", note]
-    r = run_tool(RADAR_DIR, args, timeout=60)
+
+    results = []
+    added_count = 0
+    for it in items:
+        args = ["biliradar.py", "add", it]
+        if len(items) == 1 and fallback_note:
+            args += ["--note", fallback_note]
+        r = run_tool(RADAR_DIR, args, timeout=60)
+        status = "added" if r.get("returncode") == 0 else "error"
+        # 如果已经追踪过，biliradar 会输出"已在追踪列表中"，returncode 也是 0
+        if "已在追踪列表" in (r.get("stdout") or ""):
+            status = "duplicate"
+        else:
+            if status == "added":
+                added_count += 1
+        results.append({
+            "input": it,
+            "status": status,
+            "stdout": (r.get("stdout") or "").splitlines()[-3:],  # 只留最后几行
+            "stderr": r.get("stderr") if status == "error" else None,
+        })
+
     return jsonify({
-        "returncode": r["returncode"],
-        "stdout": r["stdout"],
-        "stderr": r["stderr"],
+        "ok": True,
+        "total": len(items),
+        "added": added_count,
+        "duplicates": sum(1 for r in results if r["status"] == "duplicate"),
+        "errors": sum(1 for r in results if r["status"] == "error"),
+        "results": results,
     })
 
 
@@ -538,6 +606,21 @@ def api_comments_download(filename: str):
     if not p.exists():
         abort(404)
     return send_file(str(p), as_attachment=True, download_name=filename)
+
+
+@app.delete("/api/comments/download/<filename>")
+def api_comments_delete_file(filename: str):
+    """删除 comments/data/ 下的 xlsx 输出文件。"""
+    if not filename.endswith(".xlsx") or "/" in filename or "\\" in filename or ".." in filename:
+        return jsonify({"error": "不合法的文件名"}), 400
+    p = COMMENTS_DIR / "data" / filename
+    if not p.exists():
+        return jsonify({"error": "文件不存在"}), 404
+    try:
+        p.unlink()
+        return jsonify({"ok": True, "deleted": filename})
+    except Exception as e:
+        return jsonify({"error": f"删除失败: {e}"}), 500
 
 
 # ================= Home 概览 =================

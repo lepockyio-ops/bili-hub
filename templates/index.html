@@ -62,10 +62,10 @@
     </div>
 
     <div class="card">
-      <h3>添加新订阅</h3>
-      <div class="form-row">
-        <input type="text" id="watch-input" placeholder="B 站空间链接或 UID（如 https://space.bilibili.com/12345 或 12345）">
-        <input type="text" id="watch-name" placeholder="备注（可选）" style="max-width: 200px;">
+      <h3>添加新订阅 <span class="hint" style="padding:0;">（支持批量：一行一个链接或 UID）</span></h3>
+      <textarea id="watch-input" rows="3" placeholder="支持多种格式，一行一个：&#10;https://space.bilibili.com/12345&#10;12345&#10;67890"></textarea>
+      <div class="form-row" style="margin-top:8px;">
+        <input type="text" id="watch-name" placeholder="备注（仅单个添加时生效）" style="max-width: 260px;">
         <button class="btn primary" onclick="watchAdd()">➕ 添加</button>
       </div>
     </div>
@@ -97,10 +97,10 @@
     </div>
 
     <div class="card">
-      <h3>追踪新曲目</h3>
-      <div class="form-row">
-        <input type="text" id="radar-input" placeholder="BVxxxxx 或 https://www.bilibili.com/video/BVxxx">
-        <input type="text" id="radar-note" placeholder="备注（可选）" style="max-width: 200px;">
+      <h3>追踪新曲目 <span class="hint" style="padding:0;">（支持批量：一行一个 bvid 或链接）</span></h3>
+      <textarea id="radar-input" rows="3" placeholder="支持多种格式，一行一个：&#10;BV1FDNJ6BE4j&#10;https://www.bilibili.com/video/BV1xxx&#10;BV1yyy"></textarea>
+      <div class="form-row" style="margin-top:8px;">
+        <input type="text" id="radar-note" placeholder="备注（仅单个添加时生效）" style="max-width: 260px;">
         <button class="btn primary" onclick="radarAdd()">➕ 开始追踪</button>
       </div>
     </div>
@@ -124,11 +124,9 @@
     </header>
 
     <div class="card">
-      <h3>提取视频评论</h3>
-      <div class="form-row">
-        <input type="text" id="comm-bvid" placeholder="BVxxxxx 或视频链接">
-      </div>
-      <div class="form-row options">
+      <h3>提取视频评论 <span class="hint" style="padding:0;">（支持批量：一行一个 bvid 或链接，会各自开一个后台任务）</span></h3>
+      <textarea id="comm-bvid" rows="3" placeholder="支持多种格式，一行一个：&#10;BV1FDNJ6BE4j&#10;https://www.bilibili.com/video/BV1xxx"></textarea>
+      <div class="form-row options" style="margin-top:8px;">
         <label>
           页数：
           <input type="number" id="comm-pages" value="1" min="1" max="50" style="width:70px;">

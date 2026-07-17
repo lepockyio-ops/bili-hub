@@ -131,18 +131,30 @@ async function loadWatch() {
 async function watchAdd() {
   const raw = document.getElementById("watch-input").value.trim();
   const name = document.getElementById("watch-name").value.trim();
-  if (!raw) { alert("请填 UP 主链接或 UID"); return; }
+  if (!raw) { toast("warn", "缺少输入", "请填 UP 主链接或 UID"); return; }
   try {
     const r = await api("/api/watch/subs", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({uid_or_url: raw, name})
     });
-    if (r.error) { alert("失败: " + r.error); return; }
+    if (r.error) { toast("danger", "失败", r.error); return; }
     document.getElementById("watch-input").value = "";
     document.getElementById("watch-name").value = "";
+    // 批量结果 toast
+    if ((r.total || 0) > 1) {
+      const parts = [`新增 <strong>${r.added}</strong>`];
+      if (r.duplicates) parts.push(`重复 ${r.duplicates}`);
+      if (r.errors) parts.push(`失败 ${r.errors}`);
+      toast(r.errors ? "warn" : "success", `📥 批量添加完成 (${r.total})`, parts.join(" · "));
+    } else if (r.added) {
+      const item = (r.results || [])[0] || {};
+      toast("success", "✓ 已添加", `UID ${item.uid || ""}`);
+    } else if (r.duplicates) {
+      toast("info", "已存在", "该 UP 已在订阅列表中");
+    }
     loadWatch();
-  } catch (e) { alert("失败: " + e.message); }
+  } catch (e) { toast("danger", "失败", e.message); }
 }
 
 async function watchRemove(uid) {
@@ -219,23 +231,39 @@ async function loadRadar() {
 async function radarAdd() {
   const bvid = document.getElementById("radar-input").value.trim();
   const note = document.getElementById("radar-note").value.trim();
-  if (!bvid) { alert("请填 bvid 或视频链接"); return; }
-  showLoading("正在添加追踪并采集基线...");
+  if (!bvid) { toast("warn", "缺少输入", "请填 bvid 或视频链接"); return; }
+  const lineCount = bvid.split(/\r?\n/).filter(l => l.trim()).length;
+  showLoading(lineCount > 1
+    ? `正在批量添加 ${lineCount} 首曲目并采集基线（每首约 3-8s）...`
+    : "正在添加追踪并采集基线...");
   try {
     const r = await api("/api/radar/tracks", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({bvid, note})
     });
-    if (r.returncode !== 0) {
-      alert("失败:\n" + (r.stderr || r.stdout));
+    if (r.error) {
+      toast("danger", "失败", r.error);
       return;
     }
     document.getElementById("radar-input").value = "";
     document.getElementById("radar-note").value = "";
+    if ((r.total || 0) > 1) {
+      const parts = [`新增 <strong>${r.added}</strong>`];
+      if (r.duplicates) parts.push(`重复 ${r.duplicates}`);
+      if (r.errors) parts.push(`失败 ${r.errors}`);
+      toast(r.errors ? "warn" : "success", `📥 批量追踪完成 (${r.total})`, parts.join(" · "));
+    } else if (r.added) {
+      toast("success", "✓ 已开始追踪", escapeHtml(bvid));
+    } else if (r.duplicates) {
+      toast("info", "已在追踪", escapeHtml(bvid));
+    } else if (r.errors) {
+      const err = (r.results && r.results[0] && r.results[0].stderr) || "";
+      toast("danger", "添加失败", escapeHtml(err.slice(0, 200) || "查看日志"));
+    }
     loadRadar();
   } catch (e) {
-    alert("失败: " + e.message);
+    toast("danger", "失败", e.message);
   } finally {
     hideLoading();
   }
@@ -344,16 +372,30 @@ async function commentsExtract() {
       toast("danger", "提交失败", r.error);
       return;
     }
-    if (r.job_id) {
+    // 支持批量：后端会返回 jobs 数组
+    const jobs = r.jobs || (r.job_id ? [{job_id: r.job_id, bvid}] : []);
+    if (jobs.length === 0) {
+      toast("warn", "未创建任务", "请检查输入");
+      return;
+    }
+    if (jobs.length > 1) {
+      toast(
+        "info",
+        `🚀 ${jobs.length} 个任务已提交`,
+        `全部在后台并发运行，完成会一个个弹出。<br>你可以继续操作其他功能。`,
+        8000,
+      );
+    } else {
       toast(
         "info",
         "🚀 任务已提交",
-        `<strong>${escapeHtml(bvid)}</strong> 后台运行中，你可以继续操作其他功能。<br>完成后会弹出提示。`,
+        `<strong>${escapeHtml(jobs[0].bvid)}</strong> 后台运行中，你可以继续操作其他功能。<br>完成后会弹出提示。`,
       );
-      pollCommentJob(r.job_id, bvid);
-      loadCommentJobs();
     }
-    // 清空输入方便下一个
+    for (const j of jobs) {
+      pollCommentJob(j.job_id, j.bvid);
+    }
+    loadCommentJobs();
     document.getElementById("comm-bvid").value = "";
   } catch (e) {
     toast("danger", "提交失败", e.message);
@@ -456,7 +498,7 @@ async function loadCommentsOutputs() {
       box.innerHTML = '<div class="empty">暂无输出。用上方表单提取第一个视频的评论。</div>';
       return;
     }
-    box.innerHTML = files.slice(0, 20).map(f => `
+    box.innerHTML = files.slice(0, 30).map(f => `
       <div class="item">
         <div class="info">
           <div class="item-title">${escapeHtml(f.name)}</div>
@@ -464,6 +506,7 @@ async function loadCommentsOutputs() {
         </div>
         <div class="item-actions">
           <a class="btn primary small" href="/api/comments/download/${encodeURIComponent(f.name)}" target="_blank">📥 下载</a>
+          <button class="btn danger small" onclick="deleteCommentOutput('${f.name.replace(/'/g, "\\'")}')">🗑 删除</button>
         </div>
       </div>
     `).join("");
@@ -500,6 +543,25 @@ function showResult(id, text) {
 
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
+}
+
+/**
+ * 删除评论输出的 XLSX 文件
+ */
+async function deleteCommentOutput(filename) {
+  if (!confirm(`🗑 删除文件 ${filename}？\n\n此操作不可恢复！`)) return;
+  try {
+    const r = await api(`/api/comments/download/${encodeURIComponent(filename)}`, {method: "DELETE"});
+    if (r.ok) {
+      toast("success", "🗑 已删除", escapeHtml(filename));
+      loadCommentsOutputs();
+      loadSummary();
+    } else {
+      toast("danger", "删除失败", r.error || "");
+    }
+  } catch (e) {
+    toast("danger", "删除失败", e.message);
+  }
 }
 
 // ============================================================================
