@@ -1,16 +1,19 @@
-# BiliHub 启动脚本（Windows PowerShell）
-# 用法：右键 → 用 PowerShell 运行  或者双击 start.bat
+# BiliHub launcher (Windows PowerShell)
+# All messages in English/ASCII to avoid encoding issues when
+# double-clicking start.bat on Chinese Windows systems.
+# (This file must be saved as ASCII or UTF-8 without BOM
+#  to work reliably across PowerShell 5 and 7.)
 
 $ErrorActionPreference = "Stop"
 $env:PYTHONIOENCODING = "utf-8"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-# 清除可能被 Claude Cowork 污染的 venv 环境变量
+# Clear venv env vars that may leak from other tools (Claude Cowork etc.)
 Remove-Item Env:VIRTUAL_ENV -ErrorAction SilentlyContinue
 Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
 Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
 
-# v1.6 fix：$PSScriptRoot 在某些启动方式下可能为空，加 fallback
+# Robust script dir detection (handles empty $PSScriptRoot)
 $scriptDir = $PSScriptRoot
 if ([string]::IsNullOrEmpty($scriptDir)) {
     if ($MyInvocation.MyCommand.Path) {
@@ -22,11 +25,9 @@ if ([string]::IsNullOrEmpty($scriptDir)) {
 }
 Set-Location $scriptDir
 
-# 检查邻居目录
+# Check neighbor tool directories
 $parent = Split-Path -Parent $scriptDir
-if ([string]::IsNullOrEmpty($parent)) {
-    Write-Host "⚠️  无法确定父目录（当前 = $scriptDir），跳过邻居检查" -ForegroundColor Yellow
-} else {
+if (-not [string]::IsNullOrEmpty($parent)) {
     $missing = @()
     foreach ($name in @("biliwatch", "biliradar", "bili-comments", "bili-creator-report")) {
         $p = Join-Path -Path $parent -ChildPath $name
@@ -35,7 +36,7 @@ if ([string]::IsNullOrEmpty($parent)) {
         }
     }
     if ($missing.Count -gt 0) {
-        Write-Host "[!] 以下工具目录不存在（部分功能会失效）：" -ForegroundColor Yellow
+        Write-Host "[!] Missing neighbor tool directories (some features will be disabled):" -ForegroundColor Yellow
         foreach ($m in $missing) {
             Write-Host "    - $m"
         }
@@ -43,30 +44,33 @@ if ([string]::IsNullOrEmpty($parent)) {
     }
 }
 
-# 检查 Python
+# Check Python
 try {
     $ver = & py --version 2>&1
     Write-Host "[OK] Python: $ver" -ForegroundColor Green
 } catch {
-    Write-Host "[X] 未找到 Python（py 命令）。请先安装 Python 3.10+" -ForegroundColor Red
-    Write-Host "    下载: https://www.python.org/downloads/"
+    Write-Host "[X] Python not found (py command missing). Install Python 3.10+" -ForegroundColor Red
+    Write-Host "    Download: https://www.python.org/downloads/"
     Pause
     exit 1
 }
 
-# 检查依赖
+# Check dependencies
 $null = & py -c "import flask, yaml" 2>&1
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "[i] 首次运行，正在安装依赖..." -ForegroundColor Yellow
+    Write-Host "[i] First run - installing dependencies..." -ForegroundColor Yellow
     & py -m pip install -r requirements.txt --quiet --disable-pip-version-check
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "[X] 依赖安装失败" -ForegroundColor Red
+        Write-Host "[X] Dependency installation failed" -ForegroundColor Red
         Pause
         exit 1
     }
-    Write-Host "[OK] 依赖已安装" -ForegroundColor Green
+    Write-Host "[OK] Dependencies installed" -ForegroundColor Green
 }
 
-# 启动
+# Launch
+Write-Host ""
+Write-Host "[i] Starting BiliHub server on http://127.0.0.1:5678/" -ForegroundColor Cyan
+Write-Host "[i] Press Ctrl+C to stop." -ForegroundColor Cyan
 Write-Host ""
 & py -X utf8 app.py
