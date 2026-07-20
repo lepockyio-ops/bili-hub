@@ -181,15 +181,25 @@ async function loadWatch() {
     box.innerHTML = subs.map(s => {
       const isPlaceholder = /^UID\d+$/.test(s.name || "");
       const displayName = isPlaceholder
-        ? `<span style="color: var(--text-dim); font-style: italic;">${escapeHtml(s.name)}</span> <span class="badge warn" title="尚未拉取到真实用户名，请点顶部「刷新用户名」">未识别</span>`
+        ? `<span style="color: var(--text-dim); font-style: italic;">${escapeHtml(s.name)}</span> <span class="badge warn" title="尚未拉取到真实用户名，请点顶部「刷新用户信息」">未识别</span>`
         : escapeHtml(s.name);
-      // 判断 48h 内是否有新投稿
       const isRecent = s.last_created_ts && (nowSec - s.last_created_ts) <= RECENT_WINDOW;
       const hoursAgo = s.last_created_ts ? Math.round((nowSec - s.last_created_ts) / 3600) : null;
       const recentBadge = isRecent
         ? `<span class="badge fresh" title="过去 48h 内的新投稿">🔥 ${hoursAgo}h 前</span>`
         : '';
       const itemClass = isRecent ? 'item item-recent' : 'item';
+
+      // v2.0 新增数据（如果 refresh-names 拉过就有）
+      const statsLine = (s.fans != null || s.video_count != null || s.avg_view != null) ? `
+        <div class="creator-stats">
+          ${s.fans != null ? `<span class="stat-chip">👥 <strong>${fmtNum(s.fans)}</strong> 粉丝</span>` : ''}
+          ${s.video_count != null ? `<span class="stat-chip">🎬 <strong>${s.video_count}</strong> 视频</span>` : ''}
+          ${s.avg_view != null ? `<span class="stat-chip">▶ 均播 <strong>${fmtNum(s.avg_view)}</strong></span>` : ''}
+          ${s.avg_like != null ? `<span class="stat-chip">❤ 均赞 <strong>${fmtNum(s.avg_like)}</strong></span>` : ''}
+        </div>
+      ` : '';
+
       return `
         <div class="${itemClass}">
           <div class="info">
@@ -202,6 +212,7 @@ async function loadWatch() {
               UID <a href="${s.space_url}" target="_blank">${s.uid}</a>
               · 最新投稿: ${s.last_created_fmt || '—'}
             </div>
+            ${statsLine}
           </div>
           <div class="item-actions">
             <button class="btn danger small" onclick="watchRemove(${s.uid})">删除</button>
@@ -845,8 +856,9 @@ async function reportGenerate() {
 
   const payload = {
     uid: raw,
-    videos_limit: parseInt(document.getElementById("report-videos").value) || 15,
+    videos_limit: 30,  // v2.0 固定 30，不再让用户选
     months: document.getElementById("report-months").value || null,
+    language: document.getElementById("report-language").value || "both",
   };
   try {
     const r = await api("/api/report/generate", {
@@ -1008,23 +1020,109 @@ async function deleteReport(filename) {
 }
 
 /**
- * 从订阅列表快速填入 UID
+ * v2.0: 弹窗形式选择要生成报告的 UP 主（复选）
  */
-async function openWatchPicker() {
+async function openReportPicker() {
   try {
     const subs = await api("/api/watch/subs");
     if (!subs || subs.length === 0) {
       toast("warn", "无订阅", "请先到 UP 主监控 tab 添加订阅");
       return;
     }
-    const lines = subs.map(s => s.uid).join("\n");
-    document.getElementById("report-uid").value = lines;
-    toast("info", `📋 已填入 ${subs.length} 个 UID`,
-      "点「开始生成」即可批量为全部签约曲师生成报告", 5000);
+    showReportPickerModal(subs);
   } catch (e) {
     toast("danger", "读取订阅失败", e.message);
   }
 }
+
+function showReportPickerModal(subs) {
+  // 移除已存在的
+  const old = document.getElementById("report-picker-modal");
+  if (old) old.remove();
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop";
+  backdrop.id = "report-picker-modal";
+  backdrop.onclick = (e) => { if (e.target === backdrop) closeReportPicker(); };
+
+  const modal = document.createElement("div");
+  modal.className = "modal";
+  modal.onclick = (e) => e.stopPropagation();
+
+  modal.innerHTML = `
+    <div class="modal-title">📋 选择要生成报告的 UP 主 · 共 ${subs.length} 位</div>
+    <div class="form-row" style="margin-bottom: 10px; align-items: center;">
+      <button class="btn small" onclick="reportPickerSelectAll(true)">✓ 全选</button>
+      <button class="btn small" onclick="reportPickerSelectAll(false)">✗ 清空</button>
+      <input type="text" id="report-picker-search" placeholder="搜索曲师名或 UID..." oninput="reportPickerFilter()" style="flex:1;">
+    </div>
+    <div class="modal-body" id="report-picker-list">
+      ${subs.map(s => `
+        <label class="modal-creator-item" data-search="${escapeHtml((s.name||'') + ' ' + s.uid)}">
+          <input type="checkbox" value="${s.uid}" class="report-picker-cb">
+          <div class="name">${escapeHtml(s.name)}</div>
+          <div class="uid">UID ${s.uid}</div>
+        </label>
+      `).join("")}
+    </div>
+    <div class="modal-footer">
+      <span class="hint" id="report-picker-count" style="padding: 0; margin-right: auto;">已选 0 位</span>
+      <button class="btn" onclick="closeReportPicker()">取消</button>
+      <button class="btn primary" onclick="reportPickerConfirm()">➕ 添加选中项</button>
+    </div>
+  `;
+
+  backdrop.appendChild(modal);
+  document.body.appendChild(backdrop);
+
+  // 监听勾选数量变化
+  modal.querySelectorAll(".report-picker-cb").forEach(cb => {
+    cb.onchange = updateReportPickerCount;
+  });
+}
+
+function reportPickerSelectAll(checked) {
+  document.querySelectorAll("#report-picker-list .modal-creator-item:not([style*='display: none']) .report-picker-cb")
+    .forEach(cb => cb.checked = checked);
+  updateReportPickerCount();
+}
+
+function reportPickerFilter() {
+  const q = document.getElementById("report-picker-search").value.trim().toLowerCase();
+  document.querySelectorAll("#report-picker-list .modal-creator-item").forEach(el => {
+    const s = el.dataset.search.toLowerCase();
+    el.style.display = (!q || s.includes(q)) ? "flex" : "none";
+  });
+}
+
+function updateReportPickerCount() {
+  const n = document.querySelectorAll("#report-picker-list .report-picker-cb:checked").length;
+  const el = document.getElementById("report-picker-count");
+  if (el) el.textContent = `已选 ${n} 位`;
+}
+
+function reportPickerConfirm() {
+  const uids = Array.from(
+    document.querySelectorAll("#report-picker-list .report-picker-cb:checked")
+  ).map(cb => cb.value);
+  if (uids.length === 0) {
+    toast("warn", "未选择", "请至少勾选 1 位曲师");
+    return;
+  }
+  const existing = (document.getElementById("report-uid").value || "").trim();
+  const merged = [...new Set([...(existing ? existing.split(/\s+/) : []), ...uids])];
+  document.getElementById("report-uid").value = merged.join("\n");
+  closeReportPicker();
+  toast("info", `📋 已添加 ${uids.length} 位到输入框`, "点「🚀 开始生成」即可批量生成", 4000);
+}
+
+function closeReportPicker() {
+  const m = document.getElementById("report-picker-modal");
+  if (m) m.remove();
+}
+
+// 旧的兼容名（避免其他地方引用出错）
+async function openWatchPicker() { return openReportPicker(); }
 
 function fmt_ts(ts) {
   if (!ts) return '—';
@@ -1122,6 +1220,7 @@ function renderPiracyFinding(f, uid) {
     <div class="piracy-finding-row ${f.review_status}">
       <div class="piracy-finding-title">
         <a href="${f.url}" target="_blank">${escapeHtml(f.title)}</a>
+        <span class="piracy-badge none" style="margin-left:6px; font-family: 'SFMono-Regular', Consolas, monospace;">${f.bvid}</span>
       </div>
       <div class="piracy-finding-meta">
         发布者 <a href="${f.author_url}" target="_blank" style="color: var(--text-dim);">${escapeHtml(f.author)}</a> (UID ${f.author_mid})

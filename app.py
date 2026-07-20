@@ -524,14 +524,35 @@ def health():
 
 
 # ================= Watch API =================
+CREATOR_STATS_PATH = HUB_DIR / "data" / "creator_stats.json"
+
+
+def load_creator_stats() -> dict:
+    if not CREATOR_STATS_PATH.exists():
+        return {}
+    try:
+        with CREATOR_STATS_PATH.open(encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_creator_stats(stats: dict):
+    CREATOR_STATS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with CREATOR_STATS_PATH.open("w", encoding="utf-8") as f:
+        json.dump(stats, f, ensure_ascii=False, indent=2)
+
+
 @app.get("/api/watch/subs")
 def api_watch_list():
     cfg = watch_load_config()
     state = watch_load_state().get("ups", {})
+    stats_cache = load_creator_stats()
     subs = []
     for s in cfg.get("subscriptions", []) or []:
         mid = s["uid"]
         st = state.get(str(mid), {})
+        cs = stats_cache.get(str(mid), {})
         subs.append({
             "uid": mid,
             "name": s.get("name") or f"UID{mid}",
@@ -540,6 +561,12 @@ def api_watch_list():
             "last_created_fmt": fmt_time(st.get("last_created_ts")),
             "checked_at_fmt": fmt_time(st.get("checked_at")),
             "space_url": f"https://space.bilibili.com/{mid}",
+            # v2.0 新增：从 creator_stats.json 读缓存
+            "fans": cs.get("fans"),
+            "video_count": cs.get("video_count"),
+            "avg_view": cs.get("avg_view"),
+            "avg_like": cs.get("avg_like"),
+            "stats_updated_fmt": fmt_time(cs.get("updated_at")) if cs.get("updated_at") else None,
         })
     return jsonify(subs)
 
@@ -663,18 +690,20 @@ def api_watch_refresh_names():
     def worker():
         cfg = watch_load_config()
         subs = cfg.get("subscriptions") or []
+        stats_cache = load_creator_stats()
         updated = 0
+        stats_updated = 0
         failed = 0
         details = []
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
             "Referer": "https://www.bilibili.com/",
         }
-        # 用 httpx 一次性拉取
         try:
             import httpx as _hx
         except ImportError:
             return {"error": "缺少 httpx", "updated": 0, "failed": len(subs), "total": len(subs)}
+        now = int(time.time())
         with _hx.Client(timeout=10.0, headers=headers, follow_redirects=True) as c:
             try:
                 c.get("https://www.bilibili.com/")
@@ -683,28 +712,97 @@ def api_watch_refresh_names():
             for s in subs:
                 mid = s["uid"]
                 try:
+                    # 1. 拿 card（含 name 和 fans）
                     r = c.get("https://api.bilibili.com/x/web-interface/card",
                               params={"mid": mid})
                     data = r.json()
+                    card_name = None
+                    fans_from_card = None
                     if data.get("code") == 0:
-                        real_name = (data.get("data") or {}).get("card", {}).get("name") or ""
-                        if real_name and s.get("name") != real_name:
-                            details.append(f"{mid}: {s.get('name')} → {real_name}")
-                            s["name"] = real_name
+                        card = (data.get("data") or {}).get("card", {})
+                        card_name = card.get("name")
+                        fans_from_card = card.get("fans")
+                        if card_name and s.get("name") != card_name:
+                            details.append(f"{mid}: {s.get('name')} -> {card_name}")
+                            s["name"] = card_name
                             updated += 1
-                    else:
-                        failed += 1
-                        details.append(f"{mid}: API code={data.get('code')}")
+
+                    # 2. 拿 upstat（含 total_view）
+                    time.sleep(0.35)
+                    total_view = None
+                    try:
+                        r = c.get("https://api.bilibili.com/x/space/upstat",
+                                  params={"mid": mid})
+                        d2 = r.json()
+                        if d2.get("code") == 0:
+                            total_view = ((d2.get("data") or {}).get("archive") or {}).get("view")
+                    except Exception:
+                        pass
+
+                    # 3. 拿最近视频列表算总数 + 平均点赞（用 space wbi arc/search）
+                    time.sleep(0.35)
+                    video_count = None
+                    avg_like = None
+                    try:
+                        # 直接调 biliwatch 的 wbi 客户端太复杂，这里简化：
+                        # 用 space search 接口（新老都试），只求个总数
+                        r = c.get(
+                            "https://api.bilibili.com/x/space/arc/search",
+                            params={"mid": mid, "pn": 1, "ps": 30, "order": "pubdate"}
+                        )
+                        d3 = r.json()
+                        if d3.get("code") == 0:
+                            page = ((d3.get("data") or {}).get("page") or {})
+                            video_count = page.get("count")
+                            vlist = ((d3.get("data") or {}).get("list") or {}).get("vlist") or []
+                            # 平均点赞：拿前 20 首里 play 作参考（B 站列表不返回 like）
+                            # 只能算平均播放
+                            if vlist:
+                                plays = [v.get("play", 0) or 0 for v in vlist[:20]]
+                                if plays:
+                                    avg_play_from_list = sum(plays) // len(plays)
+                                else:
+                                    avg_play_from_list = None
+                            else:
+                                avg_play_from_list = None
+                        else:
+                            avg_play_from_list = None
+                    except Exception:
+                        avg_play_from_list = None
+
+                    # 平均播放：优先总播放/视频数，兜底最近 20 平均
+                    avg_view = None
+                    if total_view and video_count:
+                        try:
+                            avg_view = int(total_view) // int(video_count)
+                        except Exception:
+                            avg_view = None
+                    elif avg_play_from_list:
+                        avg_view = avg_play_from_list
+
+                    # 存入 stats cache
+                    stats_cache[str(mid)] = {
+                        "fans": fans_from_card,
+                        "video_count": video_count,
+                        "total_view": total_view,
+                        "avg_view": avg_view,
+                        "avg_like": avg_like,  # v2.0 暂不实现，需要遍历每个视频
+                        "updated_at": now,
+                    }
+                    stats_updated += 1
+
                 except Exception as e:
                     failed += 1
-                    details.append(f"{mid}: 异常 {e}")
-                time.sleep(0.4)  # 防风控
+                    details.append(f"{mid}: exception {e}")
+                time.sleep(0.5)
         watch_save_config(cfg)
+        save_creator_stats(stats_cache)
         return {
             "updated": updated,
+            "stats_updated": stats_updated,
             "failed": failed,
             "total": len(subs),
-            "details": details[:50],  # 只留前 50 条日志
+            "details": details[:50],
         }
 
     job_id = _bg_job_start("watch-refresh-names", {"total": len(subs)}, worker)
@@ -1047,8 +1145,9 @@ def api_report_generate():
     """
     data = request.get_json(silent=True) or {}
     raw = data.get("uid", "")
-    videos_limit = int(data.get("videos_limit") or 15)
+    videos_limit = int(data.get("videos_limit") or 30)
     months = data.get("months")  # 可选
+    language = (data.get("language") or "both").strip()  # v2.0: zh / ja / both
 
     if not (REPORT_DIR / "generate_report.py").exists():
         return jsonify({"error": "generate_report.py 不存在，请检查 bili-creator-report 目录"}), 500
@@ -1078,6 +1177,8 @@ def api_report_generate():
         args = ["generate_report.py", str(uid), "--videos-limit", str(videos_limit)]
         if months:
             args += ["--months", str(int(months))]
+        if language and language != "both":
+            args += ["--language", language]
 
         def make_worker(a):
             def worker():

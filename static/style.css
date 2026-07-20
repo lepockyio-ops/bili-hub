@@ -446,6 +446,74 @@ input[type="checkbox"] { cursor: pointer; }
 }
 .piracy-finding-actions .btn { padding: 2px 8px; font-size: 11px; }
 
+/* v2.0: UP 监控卡的额外统计信息 */
+.creator-stats {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+.stat-chip {
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 2px 8px;
+  background: var(--bg-3);
+  border-radius: 4px;
+}
+.stat-chip strong { color: var(--accent); }
+
+/* v2.0: Modal 弹窗 */
+.modal-backdrop {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.6);
+  z-index: 9998;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.modal {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+  min-width: 400px;
+  max-width: 600px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+.modal-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+.modal-body {
+  flex: 1;
+  overflow-y: auto;
+  margin-bottom: 12px;
+  max-height: 60vh;
+}
+.modal-footer {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+.modal-creator-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.modal-creator-item:hover { background: var(--bg-3); }
+.modal-creator-item input { cursor: pointer; }
+.modal-creator-item .name { flex: 1; }
+.modal-creator-item .uid { color: var(--text-dim); font-size: 11px; }
+
 /* ---------- Pre / Log ---------- */
 pre {
   background: var(--bg);

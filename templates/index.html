@@ -66,7 +66,7 @@
 
     <div class="action-bar">
       <button class="btn primary" onclick="watchCheck()">🔍 立即检查所有订阅</button>
-      <button class="btn" onclick="refreshWatchNames()">🏷️ 刷新用户名</button>
+      <button class="btn" onclick="refreshWatchNames()">🏷️ 刷新用户信息（含粉丝/视频/均播）</button>
       <button class="btn" onclick="loadWatch()">🔄 刷新列表</button>
     </div>
 
@@ -211,12 +211,9 @@
     </header>
 
     <div class="card">
-      <h3>生成曲师报告 <span class="hint" style="padding:0;">（支持批量：一行一个 UID）</span></h3>
+      <h3>生成 UP 主月报告 <span class="hint" style="padding:0;">（支持批量：一行一个 UID）</span></h3>
       <textarea id="report-uid" rows="3" placeholder="一行一个 UID（曲师订阅列表里的 UID 数字）：&#10;3706963953191779&#10;3706942788733015"></textarea>
       <div class="form-row options" style="margin-top:8px;">
-        <label>分析视频数：
-          <input type="number" id="report-videos" value="15" min="1" max="50" style="width:70px;">
-        </label>
         <label>只看近月：
           <select id="report-months">
             <option value="">全部</option>
@@ -225,11 +222,18 @@
             <option value="6">6 个月</option>
           </select>
         </label>
+        <label>报告语言：
+          <select id="report-language">
+            <option value="both" selected>中日双语</option>
+            <option value="zh">仅中文</option>
+            <option value="ja">仅日语</option>
+          </select>
+        </label>
       </div>
       <div class="form-row" style="margin-top:8px; align-items:flex-start;">
         <button class="btn primary" onclick="reportGenerate()">🚀 开始生成</button>
-        <button class="btn" onclick="openWatchPicker()">📋 从订阅列表选</button>
-        <span class="hint">每份报告约 30-90 秒（视频数越多越慢）</span>
+        <button class="btn" onclick="openReportPicker()">📋 从订阅列表选</button>
+        <span class="hint">每份报告约 30-90 秒</span>
       </div>
     </div>
 
