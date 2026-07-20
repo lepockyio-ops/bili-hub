@@ -21,7 +21,7 @@ document.querySelectorAll(".nav-item").forEach(el => {
 // 支持初始 hash 定位
 window.addEventListener("load", () => {
   const hash = (window.location.hash || "#home").slice(1);
-  if (["home", "watch", "radar", "comments", "report"].includes(hash)) {
+  if (["home", "watch", "radar", "comments", "report", "piracy"].includes(hash)) {
     switchTab(hash);
   }
   loadSummary();
@@ -31,6 +31,7 @@ window.addEventListener("load", () => {
   loadCommentJobs();
   loadReportOutputs();
   loadReportJobs();
+  loadPiracyList();
   loadSchedulerStatus();
   // 恢复未完成的 job 轮询（例如页面刷新后）
   resumePollingRunningJobs();
@@ -969,6 +970,217 @@ async function openWatchPicker() {
 function fmt_ts(ts) {
   if (!ts) return '—';
   return new Date(ts * 1000).toLocaleString('zh-CN');
+}
+
+// ============================================================================
+// v1.8: BiliAntiPiracy 侵权监测
+// ============================================================================
+const _expandedPiracyRows = new Set();
+const _pollingPiracyJobs = new Set();
+
+async function loadPiracyList() {
+  try {
+    const creators = await api("/api/piracy/creators");
+    document.getElementById("piracy-count").textContent = creators.length;
+    const box = document.getElementById("piracy-creators");
+    if (!box) return;
+    if (!creators || creators.length === 0) {
+      box.innerHTML = '<div class="empty">暂无订阅曲师。请先到「👀 UP 主监控」添加订阅。</div>';
+      return;
+    }
+    box.innerHTML = creators.map(c => renderPiracyCreator(c)).join("");
+    // 重新展开之前打开的行
+    for (const uid of _expandedPiracyRows) {
+      togglePiracyExpand(uid, false);  // 打开但不 toggle
+    }
+  } catch (e) {
+    document.getElementById("piracy-creators").innerHTML =
+      `<div class="alert danger">加载失败: ${e.message}</div>`;
+  }
+}
+
+function renderPiracyCreator(c) {
+  const badges = [];
+  if (c.pending > 0) badges.push(`<span class="piracy-badge pending">待审阅 ${c.pending}</span>`);
+  if (c.confirmed > 0) badges.push(`<span class="piracy-badge confirmed">确认侵权 ${c.confirmed}</span>`);
+  if (c.whitelisted > 0) badges.push(`<span class="piracy-badge whitelisted">白名单 ${c.whitelisted}</span>`);
+  if (c.false_positive > 0) badges.push(`<span class="piracy-badge false_positive">误判 ${c.false_positive}</span>`);
+  if (badges.length === 0) badges.push(`<span class="piracy-badge none">未扫描</span>`);
+
+  const totalDetected = c.pending + c.confirmed + c.whitelisted + c.false_positive;
+  const expandable = totalDetected > 0;
+  const scanBtnLabel = c.last_scan ? "🔄 重新扫描" : "🔍 查询";
+
+  return `
+    <div class="piracy-creator" id="piracy-c-${c.uid}">
+      <div class="row1">
+        <div class="name">
+          <a href="${c.space_url}" target="_blank" style="color: inherit; text-decoration: none;">
+            ${escapeHtml(c.name)}
+          </a>
+          <span class="subtle" style="font-weight: 400; margin-left: 6px;">UID ${c.uid}</span>
+        </div>
+        <div class="badges">${badges.join("")}</div>
+        <div class="last-scan">${c.last_scan_fmt ? '扫于 ' + c.last_scan_fmt : ''}</div>
+        <div class="item-actions">
+          ${expandable ? `<button class="btn small" onclick="togglePiracyExpand(${c.uid})">📋 展开</button>` : ''}
+          <button class="btn primary small" onclick="piracyScan(${c.uid}, '${escapeHtml(c.name).replace(/'/g, "\\'")}')">${scanBtnLabel}</button>
+        </div>
+      </div>
+      <div class="piracy-findings" id="piracy-findings-${c.uid}"></div>
+    </div>
+  `;
+}
+
+async function togglePiracyExpand(uid, toggle = true) {
+  const box = document.getElementById(`piracy-findings-${uid}`);
+  if (!box) return;
+  const isOpen = box.classList.contains("open");
+  if (toggle) {
+    if (isOpen) {
+      box.classList.remove("open");
+      _expandedPiracyRows.delete(uid);
+      return;
+    }
+    _expandedPiracyRows.add(uid);
+  }
+  box.classList.add("open");
+  box.innerHTML = '<div class="subtle" style="padding: 8px;">加载中...</div>';
+  try {
+    const findings = await api(`/api/piracy/findings/${uid}`);
+    if (!findings || findings.length === 0) {
+      box.innerHTML = '<div class="subtle" style="padding: 8px;">该曲师暂无 findings（扫过但没发现）</div>';
+      return;
+    }
+    box.innerHTML = findings.map(f => renderPiracyFinding(f, uid)).join("");
+  } catch (e) {
+    box.innerHTML = `<div class="alert danger">加载失败: ${e.message}</div>`;
+  }
+}
+
+function renderPiracyFinding(f, uid) {
+  return `
+    <div class="piracy-finding-row ${f.review_status}">
+      <div class="piracy-finding-title">
+        <a href="${f.url}" target="_blank">${escapeHtml(f.title)}</a>
+      </div>
+      <div class="piracy-finding-meta">
+        发布者 <a href="${f.author_url}" target="_blank" style="color: var(--text-dim);">${escapeHtml(f.author)}</a> (UID ${f.author_mid})
+        · 播放 ${fmtNum(f.play)}
+        · 发布 ${f.pubdate_fmt || '—'}
+        · 状态 <span class="piracy-badge ${f.review_status}">${f.review_status}</span>
+      </div>
+      ${f.review_status === "pending" ? `
+        <div class="piracy-finding-actions">
+          <button class="btn danger" onclick="piracyReview('${f.bvid}', ${uid}, 'confirmed')">✓ 确认侵权</button>
+          <button class="btn" onclick="piracyReview('${f.bvid}', ${uid}, 'false_positive')">✗ 误判</button>
+          <button class="btn" onclick="piracyReview('${f.bvid}', ${uid}, 'whitelisted')">🛡️ 加白名单</button>
+          <button class="btn small" onclick="piracyDelete('${f.bvid}', ${uid})" style="opacity: 0.6;">🗑</button>
+        </div>
+      ` : `
+        <div class="piracy-finding-actions">
+          <button class="btn small" onclick="piracyReview('${f.bvid}', ${uid}, 'pending')">↩ 重置为待审阅</button>
+          <button class="btn small" onclick="piracyDelete('${f.bvid}', ${uid})" style="opacity: 0.6;">🗑</button>
+        </div>
+      `}
+    </div>
+  `;
+}
+
+async function piracyScan(uid, name) {
+  try {
+    const r = await api("/api/piracy/scan", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({uid: String(uid)})
+    });
+    if (r.error) { toast("danger", "启动失败", r.error); return; }
+    if (r.jobs && r.jobs.length > 0) {
+      toast("info", "🔍 扫描已开始",
+        `<strong>${escapeHtml(name)}</strong> · 约 15-40 秒完成<br>完成后自动展开结果`, 5000);
+      pollPiracyJob(r.jobs[0].job_id, uid, name);
+    }
+  } catch (e) {
+    toast("danger", "启动失败", e.message);
+  }
+}
+
+async function pollPiracyJob(jobId, uid, name) {
+  if (_pollingPiracyJobs.has(jobId)) return;
+  _pollingPiracyJobs.add(jobId);
+  while (true) {
+    try {
+      await sleep(3000);
+      const j = await api(`/api/jobs/${jobId}`);
+      if (!j || j.status === "unknown") break;
+      if (j.status === "done") {
+        const n = j.findings_count || 0;
+        if (n > 0) {
+          toast("warn", `⚠️ ${escapeHtml(name)} 发现 ${n} 条疑似侵权`,
+            `点击行内「📋 展开」审阅每一条`, 15000);
+        } else {
+          toast("success", `✓ ${escapeHtml(name)} 无异常`,
+            "本次搜索未发现疑似侵权作品", 5000);
+        }
+        loadPiracyList();
+        // 自动展开该行
+        setTimeout(() => {
+          if (n > 0) {
+            _expandedPiracyRows.add(uid);
+            togglePiracyExpand(uid, false);
+          }
+        }, 500);
+        break;
+      }
+      if (j.status === "failed") {
+        toast("danger", `✗ 扫描失败 · ${escapeHtml(name)}`,
+          escapeHtml((j.stderr || j.error || "").slice(0, 200)), 15000);
+        break;
+      }
+    } catch (e) {
+      console.error("poll piracy err:", e);
+      break;
+    }
+  }
+  _pollingPiracyJobs.delete(jobId);
+}
+
+async function piracyReview(bvid, uid, status) {
+  const statusText = {
+    confirmed: "确认侵权",
+    false_positive: "误判",
+    whitelisted: "加入白名单",
+    pending: "重置为待审阅",
+  }[status];
+  try {
+    const r = await api("/api/piracy/review", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({bvid, creator_uid: uid, status})
+    });
+    if (r.ok) {
+      toast("success", `✓ ${statusText}`, escapeHtml(bvid), 3000);
+      loadPiracyList();
+      // 保持展开状态
+      setTimeout(() => togglePiracyExpand(uid, false), 300);
+    } else {
+      toast("danger", "标记失败", r.error || "");
+    }
+  } catch (e) {
+    toast("danger", "标记失败", e.message);
+  }
+}
+
+async function piracyDelete(bvid, uid) {
+  if (!confirm(`🗑 从数据库删除该 finding？\n${bvid}\n\n下次扫描如果还匹配到会重新出现。`)) return;
+  try {
+    const r = await api(`/api/piracy/findings/${uid}/${bvid}`, {method: "DELETE"});
+    if (r.ok) {
+      toast("info", "已删除", escapeHtml(bvid), 3000);
+      loadPiracyList();
+      setTimeout(() => togglePiracyExpand(uid, false), 300);
+    }
+  } catch (e) { toast("danger", "删除失败", e.message); }
 }
 
 // ============================================================================

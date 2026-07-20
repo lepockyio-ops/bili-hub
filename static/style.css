@@ -378,6 +378,84 @@ input[type="checkbox"] { cursor: pointer; }
   font-weight: 600;
 }
 
+/* v1.8: 侵权监测样式 */
+.piracy-creator {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 14px;
+  margin-bottom: 8px;
+}
+.piracy-creator .row1 {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.piracy-creator .name {
+  font-weight: 600;
+  color: var(--text);
+  flex: 1;
+  min-width: 0;
+}
+.piracy-creator .badges {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.piracy-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+}
+.piracy-badge.pending { background: rgba(210, 153, 34, 0.2); color: var(--warn); }
+.piracy-badge.confirmed { background: rgba(248, 81, 73, 0.25); color: var(--danger); font-weight: 700; }
+.piracy-badge.whitelisted { background: rgba(63, 185, 80, 0.15); color: var(--success); }
+.piracy-badge.false_positive { background: rgba(125, 133, 144, 0.2); color: var(--text-dim); }
+.piracy-badge.none { background: rgba(125, 133, 144, 0.1); color: var(--text-dim); }
+
+.piracy-creator .last-scan {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.piracy-findings {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+  display: none;
+}
+.piracy-findings.open { display: block; }
+.piracy-finding-row {
+  padding: 10px 12px;
+  background: var(--bg-3);
+  border-radius: 5px;
+  margin-bottom: 6px;
+  border-left: 3px solid var(--warn);
+}
+.piracy-finding-row.confirmed { border-left-color: var(--danger); }
+.piracy-finding-row.whitelisted { border-left-color: var(--success); opacity: 0.6; }
+.piracy-finding-row.false_positive { opacity: 0.4; }
+.piracy-finding-title {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 4px;
+}
+.piracy-finding-title a { color: var(--text); text-decoration: none; }
+.piracy-finding-title a:hover { color: var(--accent); }
+.piracy-finding-meta {
+  color: var(--text-dim);
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+.piracy-finding-actions {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.piracy-finding-actions .btn { padding: 2px 8px; font-size: 11px; }
+
 /* ---------- Pre / Log ---------- */
 pre {
   background: var(--bg);

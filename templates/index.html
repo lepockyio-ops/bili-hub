@@ -26,6 +26,9 @@
     <a href="#report" class="nav-item" data-tab="report">
       <span class="icon">📄</span> 曲师报告
     </a>
+    <a href="#piracy" class="nav-item" data-tab="piracy">
+      <span class="icon">🛡️</span> 侵权监测
+    </a>
   </nav>
   <div class="sidebar-footer">
     <div class="version">v1.0</div>
@@ -236,6 +239,24 @@
     <div class="card">
       <h3>历史报告 <button class="btn small" onclick="loadReportOutputs()">🔄</button></h3>
       <div id="report-outputs" class="list"></div>
+    </div>
+  </section>
+
+  <!-- ============ 侵权监测 ============ -->
+  <section id="piracy" class="tab">
+    <header class="tab-header">
+      <h1>🛡️ 侵权监测 · BiliAntiPiracy</h1>
+      <p class="subtle">扫描 B 站，识别订阅曲师作品的搬运/冒名 · 每位曲师独立查询 · 结果人工审阅</p>
+    </header>
+
+    <div class="action-bar">
+      <button class="btn" onclick="loadPiracyList()">🔄 刷新曲师列表</button>
+      <span class="hint">💡 点每行右侧的「🔍 查询」逐个扫描该曲师是否有侵权作品</span>
+    </div>
+
+    <div class="card">
+      <h3>曲师列表 <span id="piracy-count" class="count-badge">0</span></h3>
+      <div id="piracy-creators" class="list"></div>
     </div>
   </section>
 

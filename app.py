@@ -49,6 +49,7 @@ WATCH_DIR = BASE_DIR / "biliwatch"
 RADAR_DIR = BASE_DIR / "biliradar"
 COMMENTS_DIR = BASE_DIR / "bili-comments"
 REPORT_DIR = BASE_DIR / "bili-creator-report"  # v1.6 新增
+PIRACY_DIR = BASE_DIR / "bili-anti-piracy"     # v1.8 新增
 OUTPUTS_DIR = HUB_DIR / "outputs"
 
 CST = timezone(timedelta(hours=8))
@@ -61,6 +62,7 @@ def _check_neighbors():
         ("biliradar", RADAR_DIR),
         ("bili-comments", COMMENTS_DIR),
         ("bili-creator-report", REPORT_DIR),
+        ("bili-anti-piracy", PIRACY_DIR),
     ]:
         if not p.exists():
             missing.append(f"  · {name}: 期望路径 {p}")
@@ -1094,6 +1096,198 @@ def api_report_delete_file(filename: str):
         return jsonify({"ok": True, "deleted": filename})
     except Exception as e:
         return jsonify({"error": f"删除失败: {e}"}), 500
+
+
+# ============================================================================
+# v1.8: BiliAntiPiracy 集成
+# ============================================================================
+PIRACY_DB = PIRACY_DIR / "data" / "scan_results.db"
+
+
+def _piracy_conn():
+    if not PIRACY_DB.exists():
+        return None
+    conn = sqlite3.connect(PIRACY_DB)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+@app.get("/api/piracy/creators")
+def api_piracy_creators():
+    """
+    返回曲师列表（来自 biliwatch 订阅），每人附带疑似侵权数量。
+    前端用来渲染"曲师列表 · 每行一个查询按钮"。
+    """
+    watch_cfg = watch_load_config()
+    watch_state = watch_load_state().get("ups", {})
+    subs = watch_cfg.get("subscriptions") or []
+
+    # 统计每个曲师的 findings 数量
+    counts = {}
+    conn = _piracy_conn()
+    if conn:
+        rows = conn.execute("""
+            SELECT creator_uid, review_status, COUNT(*) as n,
+                   MAX(first_detected) as last_scan
+            FROM suspicious
+            GROUP BY creator_uid, review_status
+        """).fetchall()
+        for r in rows:
+            uid = r["creator_uid"]
+            counts.setdefault(uid, {"pending": 0, "confirmed": 0,
+                                    "false_positive": 0, "whitelisted": 0,
+                                    "last_scan": 0})
+            counts[uid][r["review_status"]] = r["n"]
+            if r["last_scan"] and r["last_scan"] > counts[uid]["last_scan"]:
+                counts[uid]["last_scan"] = r["last_scan"]
+        conn.close()
+
+    creators = []
+    for s in subs:
+        uid = int(s["uid"])
+        st = watch_state.get(str(uid), {})
+        c = counts.get(uid, {"pending": 0, "confirmed": 0,
+                             "false_positive": 0, "whitelisted": 0,
+                             "last_scan": 0})
+        creators.append({
+            "uid": uid,
+            "name": s.get("name") or f"UID{uid}",
+            "space_url": f"https://space.bilibili.com/{uid}",
+            "last_bvid": st.get("last_bvid", ""),
+            "pending": c["pending"],
+            "confirmed": c["confirmed"],
+            "false_positive": c["false_positive"],
+            "whitelisted": c["whitelisted"],
+            "last_scan": c["last_scan"] or 0,
+            "last_scan_fmt": fmt_time(c["last_scan"]) if c["last_scan"] else None,
+        })
+    return jsonify(creators)
+
+
+@app.get("/api/piracy/findings/<int:uid>")
+def api_piracy_findings(uid: int):
+    """返回单个曲师的所有 findings，可按状态过滤。"""
+    status = request.args.get("status", "").strip()
+    conn = _piracy_conn()
+    if not conn:
+        return jsonify([])
+    q = "SELECT * FROM suspicious WHERE creator_uid = ?"
+    params = [uid]
+    if status:
+        q += " AND review_status = ?"
+        params.append(status)
+    q += " ORDER BY play DESC, first_detected DESC"
+    rows = conn.execute(q, params).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["url"] = f"https://www.bilibili.com/video/{r['bvid']}"
+        d["first_detected_fmt"] = fmt_time(r["first_detected"])
+        d["pubdate_fmt"] = fmt_time(r["pubdate"])
+        out.append(d)
+    return jsonify(out)
+
+
+@app.post("/api/piracy/scan")
+def api_piracy_scan():
+    """扫描单个（或批量）曲师，返回后台 job_id"""
+    data = request.get_json(silent=True) or {}
+    raw = data.get("uid", "")
+    works_per_creator = int(data.get("works_per_creator") or 5)
+
+    if not (PIRACY_DIR / "scan.py").exists():
+        return jsonify({"error": "bili-anti-piracy 目录不存在"}), 500
+
+    items = _split_batch(raw)
+    if not items:
+        return jsonify({"error": "缺少 uid"}), 400
+
+    watch_subs = {s["uid"]: s.get("name", f"UID{s['uid']}")
+                  for s in (watch_load_config().get("subscriptions") or [])}
+
+    jobs = []
+    for uid_str in items:
+        try:
+            uid = int(uid_str)
+        except ValueError:
+            continue
+        name = watch_subs.get(uid, f"UID{uid}")
+        args = ["scan.py", "scan", "--creator", str(uid),
+                "--works-per-creator", str(works_per_creator)]
+
+        def make_worker(a, u, n):
+            def worker():
+                r = run_tool(PIRACY_DIR, a, timeout=600)
+                # 从 stdout 里提取"发现 N 条疑似侵权"
+                findings_count = 0
+                for line in (r.get("stdout") or "").splitlines():
+                    m = re.search(r"发现 (\d+) 条疑似侵权", line)
+                    if m:
+                        findings_count = int(m.group(1))
+                return {
+                    "returncode": r.get("returncode"),
+                    "stdout": r.get("stdout", ""),
+                    "stderr": r.get("stderr", ""),
+                    "findings_count": findings_count,
+                }
+            return worker
+
+        job_id = _bg_job_start(
+            "piracy-scan",
+            {"uid": uid, "name": name},
+            make_worker(args, uid, name),
+        )
+        jobs.append({"job_id": job_id, "uid": uid, "name": name})
+
+    return jsonify({
+        "jobs": jobs,
+        "count": len(jobs),
+        "status": "queued",
+    })
+
+
+@app.post("/api/piracy/review")
+def api_piracy_review():
+    """标记 finding 的审阅状态。"""
+    data = request.get_json(silent=True) or {}
+    bvid = (data.get("bvid") or "").strip()
+    creator_uid = int(data.get("creator_uid") or 0)
+    status = (data.get("status") or "").strip()
+    note = (data.get("note") or "").strip()
+
+    valid = ["pending", "confirmed", "false_positive", "whitelisted"]
+    if status not in valid:
+        return jsonify({"error": f"status 必须是 {valid} 之一"}), 400
+    if not bvid or not creator_uid:
+        return jsonify({"error": "缺少 bvid / creator_uid"}), 400
+
+    conn = _piracy_conn()
+    if not conn:
+        return jsonify({"error": "无数据库"}), 500
+    conn.execute(
+        "UPDATE suspicious SET review_status=?, review_note=?, reviewed_at=? "
+        "WHERE bvid=? AND creator_uid=?",
+        (status, note, int(time.time()), bvid, creator_uid)
+    )
+    conn.commit()
+    changed = conn.execute("SELECT changes()").fetchone()[0]
+    conn.close()
+    return jsonify({"ok": True, "changed": changed})
+
+
+@app.delete("/api/piracy/findings/<int:uid>/<bvid>")
+def api_piracy_delete_finding(uid: int, bvid: str):
+    if not re.match(r"^BV[0-9A-Za-z]{10}$", bvid):
+        return jsonify({"error": "bvid 不合法"}), 400
+    conn = _piracy_conn()
+    if not conn:
+        return jsonify({"error": "无数据库"}), 500
+    conn.execute("DELETE FROM suspicious WHERE bvid = ? AND creator_uid = ?", (bvid, uid))
+    conn.commit()
+    changed = conn.execute("SELECT changes()").fetchone()[0]
+    conn.close()
+    return jsonify({"ok": True, "deleted": changed})
 
 
 # ============================================================================
