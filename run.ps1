@@ -10,48 +10,63 @@ Remove-Item Env:VIRTUAL_ENV -ErrorAction SilentlyContinue
 Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
 Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
 
-Set-Location $PSScriptRoot
-
-# 检查邻居目录
-$parent = Split-Path $PSScriptRoot -Parent
-$missing = @()
-foreach ($name in @("biliwatch", "biliradar", "bili-comments")) {
-    if (-not (Test-Path (Join-Path $parent $name))) {
-        $missing += $name
+# v1.6 fix：$PSScriptRoot 在某些启动方式下可能为空，加 fallback
+$scriptDir = $PSScriptRoot
+if ([string]::IsNullOrEmpty($scriptDir)) {
+    if ($MyInvocation.MyCommand.Path) {
+        $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     }
 }
-if ($missing.Count -gt 0) {
-    Write-Host "⚠️  以下工具目录不存在（部分功能会失效）：" -ForegroundColor Yellow
-    foreach ($m in $missing) {
-        Write-Host "  · $m" -ForegroundColor Yellow
+if ([string]::IsNullOrEmpty($scriptDir)) {
+    $scriptDir = (Get-Location).Path
+}
+Set-Location $scriptDir
+
+# 检查邻居目录
+$parent = Split-Path -Parent $scriptDir
+if ([string]::IsNullOrEmpty($parent)) {
+    Write-Host "⚠️  无法确定父目录（当前 = $scriptDir），跳过邻居检查" -ForegroundColor Yellow
+} else {
+    $missing = @()
+    foreach ($name in @("biliwatch", "biliradar", "bili-comments", "bili-creator-report")) {
+        $p = Join-Path -Path $parent -ChildPath $name
+        if (-not (Test-Path $p)) {
+            $missing += $name
+        }
     }
-    Write-Host ""
+    if ($missing.Count -gt 0) {
+        Write-Host "[!] 以下工具目录不存在（部分功能会失效）：" -ForegroundColor Yellow
+        foreach ($m in $missing) {
+            Write-Host "    - $m"
+        }
+        Write-Host ""
+    }
 }
 
 # 检查 Python
 try {
-    $ver = py --version 2>&1
-    Write-Host "✓ Python: $ver" -ForegroundColor Green
+    $ver = & py --version 2>&1
+    Write-Host "[OK] Python: $ver" -ForegroundColor Green
 } catch {
-    Write-Host "❌ 未找到 Python（py 命令）。请先安装 Python 3.10+" -ForegroundColor Red
-    Write-Host "   下载: https://www.python.org/downloads/"
+    Write-Host "[X] 未找到 Python（py 命令）。请先安装 Python 3.10+" -ForegroundColor Red
+    Write-Host "    下载: https://www.python.org/downloads/"
     Pause
     exit 1
 }
 
 # 检查依赖
-$check = py -c "import flask, yaml" 2>&1
+$null = & py -c "import flask, yaml" 2>&1
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "首次运行，正在安装依赖..." -ForegroundColor Yellow
-    py -m pip install -r requirements.txt --quiet --disable-pip-version-check
+    Write-Host "[i] 首次运行，正在安装依赖..." -ForegroundColor Yellow
+    & py -m pip install -r requirements.txt --quiet --disable-pip-version-check
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "❌ 依赖安装失败" -ForegroundColor Red
+        Write-Host "[X] 依赖安装失败" -ForegroundColor Red
         Pause
         exit 1
     }
-    Write-Host "✓ 依赖已安装" -ForegroundColor Green
+    Write-Host "[OK] 依赖已安装" -ForegroundColor Green
 }
 
 # 启动
 Write-Host ""
-py -X utf8 app.py
+& py -X utf8 app.py
