@@ -25,6 +25,7 @@ window.addEventListener("load", () => {
     switchTab(hash);
   }
   loadSummary();
+  loadMemo();
   loadWatch();
   loadRadar();
   loadCommentsOutputs();
@@ -59,6 +60,64 @@ async function api(url, opts = {}) {
 }
 
 // ------------- Home 概览 -------------
+// ============================================================================
+// v1.9: 备忘录（首页）
+// ============================================================================
+let _memoDirty = false;
+let _memoLastSaved = "";
+
+async function loadMemo() {
+  try {
+    const m = await api("/api/memo");
+    const ta = document.getElementById("memo-content");
+    if (!ta) return;
+    ta.value = m.content || "";
+    _memoLastSaved = ta.value;
+    _memoDirty = false;
+    updateMemoStatus(m.updated_at_fmt ? `已加载 · 最后保存 ${m.updated_at_fmt}` : "尚未保存过");
+    // 监听变更
+    ta.oninput = () => {
+      _memoDirty = ta.value !== _memoLastSaved;
+      if (_memoDirty) updateMemoStatus("⚠️ 有未保存的修改");
+    };
+  } catch (e) {
+    updateMemoStatus(`加载失败: ${e.message}`);
+  }
+}
+
+async function saveMemo() {
+  const ta = document.getElementById("memo-content");
+  if (!ta) return;
+  const content = ta.value;
+  try {
+    const r = await api("/api/memo", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({content})
+    });
+    if (r.error) { toast("danger", "保存失败", r.error); return; }
+    _memoLastSaved = content;
+    _memoDirty = false;
+    updateMemoStatus(`✓ 已保存 · ${r.updated_at_fmt} · ${r.length} 字`);
+    toast("success", "💾 备忘录已保存", `${r.length} 字`, 3000);
+  } catch (e) {
+    toast("danger", "保存失败", e.message);
+  }
+}
+
+function updateMemoStatus(text) {
+  const el = document.getElementById("memo-status");
+  if (el) el.textContent = text;
+}
+
+// 页面离开前提示未保存
+window.addEventListener("beforeunload", (e) => {
+  if (_memoDirty) {
+    e.preventDefault();
+    e.returnValue = "备忘录有未保存的修改，确定离开？";
+  }
+});
+
 async function loadSummary() {
   try {
     const s = await api("/api/summary");
@@ -79,7 +138,7 @@ async function loadSummary() {
       <div class="sub">最新: ${s.comments.latest_file || "(无)"}</div>
     </div>`);
     cards.push(`<div class="stat-card">
-      <div class="label">📄 曲师报告</div>
+      <div class="label">📄 UP 主月报告</div>
       <div class="value" style="color:#ec4899;">${(s.report && s.report.output_files) || 0}</div>
       <div class="sub">最新: ${(s.report && s.report.latest_file) || "(无)"}</div>
     </div>`);

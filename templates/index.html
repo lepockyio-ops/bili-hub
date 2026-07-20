@@ -17,6 +17,9 @@
     <a href="#watch" class="nav-item" data-tab="watch">
       <span class="icon">👀</span> UP 主监控
     </a>
+    <a href="#piracy" class="nav-item" data-tab="piracy">
+      <span class="icon">🛡️</span> 侵权监测
+    </a>
     <a href="#radar" class="nav-item" data-tab="radar">
       <span class="icon">📊</span> 数据雷达
     </a>
@@ -24,10 +27,7 @@
       <span class="icon">💬</span> 评论收集
     </a>
     <a href="#report" class="nav-item" data-tab="report">
-      <span class="icon">📄</span> 曲师报告
-    </a>
-    <a href="#piracy" class="nav-item" data-tab="piracy">
-      <span class="icon">🛡️</span> 侵权监测
+      <span class="icon">📄</span> UP 主月报告
     </a>
   </nav>
   <div class="sidebar-footer">
@@ -45,13 +45,15 @@
       <p class="subtitle">三大工具状态一览 + 快捷入口</p>
     </header>
     <div id="summary-cards" class="summary-cards"></div>
-    <div class="tips">
-      <h3>💡 使用建议</h3>
-      <ul>
-        <li><strong>UP 主监控</strong>：加订阅 → 每 10 分钟自动检查是否有新投稿</li>
-        <li><strong>数据雷达</strong>：新曲发布后立刻加追踪 → 分钟级采集 → 24h 内判断能否上推荐</li>
-        <li><strong>评论收集</strong>：爆款曲抓评论 → 中→日 AI 翻译 → 给日方合作曲师看反馈</li>
-      </ul>
+
+    <div class="card" style="margin-top: 20px;">
+      <h3>📝 备忘录 <span class="hint" style="padding:0;">（个人笔记，自动保存，浏览器/设备间同步）</span></h3>
+      <textarea id="memo-content" rows="14" placeholder="在这里记录任何事：&#10;· 待办事项 · 曲师联系记录 · 商单机会 · 数据洞察 · 运营想法 · 联动计划 ...&#10;&#10;（保存后所有打开 BiliHub 的浏览器都能看到，重启也不会丢）"></textarea>
+      <div class="form-row" style="margin-top: 8px; align-items: center;">
+        <button class="btn primary" onclick="saveMemo()">💾 保存</button>
+        <button class="btn" onclick="loadMemo()">🔄 刷新</button>
+        <span id="memo-status" class="hint" style="padding: 0;">—</span>
+      </div>
     </div>
   </section>
 
@@ -201,11 +203,11 @@
     </div>
   </section>
 
-  <!-- ============ 曲师报告 ============ -->
+  <!-- ============ UP 主月报告 ============ -->
   <section id="report" class="tab">
     <header class="tab-header">
-      <h1>📄 曲师报告 · CreatorReport</h1>
-      <p class="subtle">为签约曲师生成中日双语数据月报（HTML → PDF）· 给日方合作方看的专业报告</p>
+      <h1>📄 UP 主月报告 · CreatorReport</h1>
+      <p class="subtle">为签约 UP 主生成中日双语数据月报（HTML → PDF）· 给日方合作方看的专业报告</p>
     </header>
 
     <div class="card">

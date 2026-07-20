@@ -469,6 +469,45 @@ def index():
     return render_template("index.html")
 
 
+MEMO_PATH = HUB_DIR / "data" / "memo.txt"
+
+
+@app.get("/api/memo")
+def api_memo_get():
+    if not MEMO_PATH.exists():
+        return jsonify({"content": "", "updated_at": None, "updated_at_fmt": None})
+    try:
+        with MEMO_PATH.open(encoding="utf-8") as f:
+            content = f.read()
+        mtime = int(MEMO_PATH.stat().st_mtime)
+        return jsonify({
+            "content": content,
+            "updated_at": mtime,
+            "updated_at_fmt": fmt_time(mtime),
+        })
+    except Exception as e:
+        return jsonify({"content": "", "error": str(e)})
+
+
+@app.post("/api/memo")
+def api_memo_save():
+    data = request.get_json(silent=True) or {}
+    content = data.get("content", "")
+    MEMO_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with MEMO_PATH.open("w", encoding="utf-8") as f:
+            f.write(content)
+        mtime = int(MEMO_PATH.stat().st_mtime)
+        return jsonify({
+            "ok": True,
+            "updated_at": mtime,
+            "updated_at_fmt": fmt_time(mtime),
+            "length": len(content),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.get("/health")
 def health():
     return jsonify({
