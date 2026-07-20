@@ -342,6 +342,42 @@ input[type="checkbox"] { cursor: pointer; }
   color: #ffe1b3;
 }
 
+/* v1.7: 调度器状态显示 */
+.scheduler-status {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border-radius: 6px;
+  background: rgba(88, 166, 255, 0.08);
+  border-left: 3px solid var(--accent);
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.scheduler-status.disabled {
+  background: rgba(125, 133, 144, 0.08);
+  border-left-color: var(--text-dim);
+}
+.scheduler-status.running {
+  background: rgba(63, 185, 80, 0.08);
+  border-left-color: var(--success);
+}
+.scheduler-status .kv strong { color: var(--text); }
+.scheduler-status .status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.scheduler-status .status-badge.on { background: rgba(63, 185, 80, 0.2); color: var(--success); }
+.scheduler-status .status-badge.off { background: rgba(125, 133, 144, 0.2); color: var(--text-dim); }
+.countdown {
+  font-family: "SFMono-Regular", Consolas, monospace;
+  color: var(--accent);
+  font-weight: 600;
+}
+
 /* ---------- Pre / Log ---------- */
 pre {
   background: var(--bg);

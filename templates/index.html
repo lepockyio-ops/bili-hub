@@ -100,6 +100,27 @@
       <a class="btn" href="/api/radar/dashboard.html" target="_blank">📖 打开最新看板</a>
     </div>
 
+    <!-- v1.7: 内置自动采集调度器控制 -->
+    <div class="card" id="scheduler-card">
+      <h3>⏰ 自动采集调度器 <span class="hint" style="padding:0;">（BiliHub 在跑时才生效）</span></h3>
+      <div id="scheduler-status" class="scheduler-status">加载中...</div>
+      <div class="form-row" style="margin-top: 12px;">
+        <label>周期：
+          <select id="scheduler-interval" onchange="schedulerSetInterval()">
+            <option value="1">1 小时</option>
+            <option value="2">2 小时</option>
+            <option value="4" selected>4 小时</option>
+            <option value="6">6 小时</option>
+            <option value="12">12 小时</option>
+            <option value="24">24 小时</option>
+          </select>
+        </label>
+        <button class="btn primary" id="scheduler-toggle-btn" onclick="schedulerToggle()">切换开关</button>
+        <button class="btn" onclick="schedulerTrigger()">⚡ 立即运行一次</button>
+        <button class="btn small" onclick="loadSchedulerStatus()">🔄</button>
+      </div>
+    </div>
+
     <div class="card">
       <h3>追踪新曲目 <span class="hint" style="padding:0;">（支持批量：一行一个 bvid 或链接）</span></h3>
       <textarea id="radar-input" rows="3" placeholder="支持多种格式，一行一个：&#10;BV1FDNJ6BE4j&#10;https://www.bilibili.com/video/BV1xxx&#10;BV1yyy"></textarea>

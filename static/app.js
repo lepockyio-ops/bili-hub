@@ -31,9 +31,12 @@ window.addEventListener("load", () => {
   loadCommentJobs();
   loadReportOutputs();
   loadReportJobs();
+  loadSchedulerStatus();
   // 恢复未完成的 job 轮询（例如页面刷新后）
   resumePollingRunningJobs();
   resumePollingReportJobs();
+  // 调度器状态每 15s 自动刷新
+  setInterval(loadSchedulerStatus, 15000);
 });
 
 // ------------- Loading 遮罩 -------------
@@ -447,6 +450,106 @@ async function radarAlerts() {
     const r = await api("/api/radar/alerts", {method: "POST"});
     showResult("radar-result", r.stdout || "无预警");
   } finally { hideLoading(); }
+}
+
+// ============================================================================
+// v1.7: 内置调度器控制
+// ============================================================================
+let _schedulerCache = null;
+
+async function loadSchedulerStatus() {
+  try {
+    const s = await api("/api/scheduler/status");
+    _schedulerCache = s;
+    const box = document.getElementById("scheduler-status");
+    if (!box) return;
+
+    const enabled = s.enabled;
+    const badgeCls = enabled ? "on" : "off";
+    const badgeText = enabled ? "已启用" : "已关闭";
+
+    let nextStr = "—";
+    if (enabled && s.next_run_at) {
+      const secs = s.next_run_in_sec || 0;
+      if (secs <= 0) {
+        nextStr = `<span class="countdown">即将运行</span>`;
+      } else if (secs < 60) {
+        nextStr = `<span class="countdown">${secs}s 后</span>`;
+      } else if (secs < 3600) {
+        nextStr = `<span class="countdown">${Math.floor(secs/60)}m ${secs%60}s 后</span> · ${s.next_run_at_fmt}`;
+      } else {
+        const h = Math.floor(secs / 3600);
+        const m = Math.floor((secs % 3600) / 60);
+        nextStr = `<span class="countdown">${h}h ${m}m 后</span> · ${s.next_run_at_fmt}`;
+      }
+    }
+
+    box.className = "scheduler-status " + (enabled ? "" : "disabled");
+    let lastRun = "";
+    if (s.last_run_at) {
+      const rc = s.last_result?.returncode;
+      const ok = rc === 0 ? "✓" : "✗";
+      lastRun = `<div class="kv">上次运行 <strong>${s.last_run_at_fmt}</strong> ${ok} · 累计跑了 <strong>${s.run_count || 0}</strong> 次</div>`;
+    }
+    box.innerHTML = `
+      <div class="kv">状态 <span class="status-badge ${badgeCls}">${badgeText}</span></div>
+      <div class="kv">周期 <strong>${s.interval_hours} 小时</strong></div>
+      <div class="kv">下次 ${nextStr}</div>
+      ${lastRun}
+    `;
+
+    // 同步 UI 控件
+    const sel = document.getElementById("scheduler-interval");
+    if (sel && parseInt(sel.value) !== s.interval_hours) {
+      sel.value = String(s.interval_hours);
+    }
+    const btn = document.getElementById("scheduler-toggle-btn");
+    if (btn) {
+      btn.textContent = enabled ? "⏸ 关闭自动采集" : "▶️ 启用自动采集";
+      btn.className = enabled ? "btn" : "btn primary";
+    }
+  } catch (e) {
+    const box = document.getElementById("scheduler-status");
+    if (box) box.innerHTML = `<span style="color: var(--danger);">状态加载失败: ${e.message}</span>`;
+  }
+}
+
+async function schedulerToggle() {
+  const current = _schedulerCache?.enabled ?? true;
+  try {
+    await api("/api/scheduler/config", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({enabled: !current})
+    });
+    toast(!current ? "success" : "info",
+      !current ? "▶️ 自动采集已启用" : "⏸ 自动采集已关闭",
+      !current ? "下次将按周期自动跑 collect" : "关闭后不再自动执行 collect");
+    loadSchedulerStatus();
+  } catch (e) { toast("danger", "操作失败", e.message); }
+}
+
+async function schedulerSetInterval() {
+  const hours = parseInt(document.getElementById("scheduler-interval").value);
+  try {
+    await api("/api/scheduler/config", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({interval_hours: hours})
+    });
+    toast("info", "⏰ 周期已更新", `每 ${hours} 小时自动采集一次`);
+    loadSchedulerStatus();
+  } catch (e) { toast("danger", "操作失败", e.message); }
+}
+
+async function schedulerTrigger() {
+  try {
+    const r = await api("/api/scheduler/trigger", {method: "POST"});
+    toast("info", "⚡ 已触发", "10 秒内会开始 collect，稍后刷新看板查看新数据点");
+    loadSchedulerStatus();
+    // 30 秒后再刷新一次，让"上次运行"更新
+    setTimeout(() => { loadSchedulerStatus(); loadRadar(); }, 40000);
+  } catch (e) { toast("danger", "触发失败", e.message); }
 }
 
 // ============================================================================

@@ -281,6 +281,147 @@ def _prune_bg_jobs(max_keep: int = 30):
             del _bg_jobs[k]
 
 
+# ============================================================================
+# v1.7: 内置 BiliRadar 自动采集调度器
+# 只要 BiliHub 在跑就自动 collect，服务停止调度也随之停止
+# ============================================================================
+SCHEDULER_CONFIG_PATH = HUB_DIR / "data" / "scheduler.json"
+
+_scheduler_state = {
+    "enabled": True,
+    "interval_hours": 4,          # 默认 4 小时
+    "next_run_at": None,
+    "last_run_at": None,
+    "last_result": None,
+    "run_count": 0,
+}
+_scheduler_lock = threading.Lock()
+_scheduler_stop = threading.Event()
+
+
+def _load_scheduler_config():
+    """从磁盘加载配置（enabled + interval），恢复上次的设置。"""
+    if not SCHEDULER_CONFIG_PATH.exists():
+        return
+    try:
+        with SCHEDULER_CONFIG_PATH.open(encoding="utf-8") as f:
+            cfg = json.load(f)
+        with _scheduler_lock:
+            if "enabled" in cfg:
+                _scheduler_state["enabled"] = bool(cfg["enabled"])
+            if "interval_hours" in cfg:
+                _scheduler_state["interval_hours"] = max(1, int(cfg["interval_hours"]))
+    except Exception:
+        pass
+
+
+def _save_scheduler_config():
+    SCHEDULER_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _scheduler_lock:
+        cfg = {
+            "enabled": _scheduler_state["enabled"],
+            "interval_hours": _scheduler_state["interval_hours"],
+        }
+    with SCHEDULER_CONFIG_PATH.open("w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+
+def _radar_scheduler_loop():
+    """
+    后台线程：定期跑 biliradar.py collect。
+    首次启动后 60 秒开始跑（避免和服务器启动打架），之后每 interval_hours 一轮。
+    """
+    _scheduler_stop.wait(60)  # 启动缓冲 60s
+    if _scheduler_stop.is_set():
+        return
+    # 首次立即跑（这样用户重启就有个新鲜数据点）
+    with _scheduler_lock:
+        _scheduler_state["next_run_at"] = int(time.time())
+
+    while not _scheduler_stop.is_set():
+        with _scheduler_lock:
+            enabled = _scheduler_state["enabled"]
+            interval = _scheduler_state["interval_hours"] * 3600
+            next_run = _scheduler_state.get("next_run_at") or 0
+
+        now = time.time()
+        if enabled and now >= next_run:
+            print(f"[scheduler] 触发 BiliRadar collect", flush=True)
+            try:
+                r = run_tool(RADAR_DIR, ["biliradar.py", "collect"], timeout=1800)
+                tail = "\n".join((r.get("stdout") or "").splitlines()[-15:])
+                with _scheduler_lock:
+                    _scheduler_state["last_run_at"] = int(time.time())
+                    _scheduler_state["last_result"] = {
+                        "returncode": r.get("returncode"),
+                        "stdout_tail": tail,
+                        "stderr_tail": "\n".join((r.get("stderr") or "").splitlines()[-5:]),
+                    }
+                    _scheduler_state["run_count"] += 1
+                    _scheduler_state["next_run_at"] = int(time.time()) + interval
+                print(f"[scheduler] collect 完成 · 下次 {datetime.fromtimestamp(_scheduler_state['next_run_at'], CST).strftime('%H:%M')}", flush=True)
+            except Exception as e:
+                with _scheduler_lock:
+                    _scheduler_state["last_result"] = {"error": str(e)}
+                    _scheduler_state["next_run_at"] = int(time.time()) + interval
+                print(f"[scheduler] collect 出错: {e}", flush=True)
+        elif enabled and not next_run:
+            # 保险：如果 next_run 被清空，重新计算
+            with _scheduler_lock:
+                _scheduler_state["next_run_at"] = int(time.time()) + 60
+
+        # 每 30 秒检查一次（响应 enable/disable/interval 变更）
+        if _scheduler_stop.wait(30):
+            break
+
+    print("[scheduler] 已停止", flush=True)
+
+
+def _start_scheduler():
+    _load_scheduler_config()
+    t = threading.Thread(target=_radar_scheduler_loop, daemon=True, name="RadarScheduler")
+    t.start()
+    return t
+
+
+# ---------- Scheduler API ----------
+@app.get("/api/scheduler/status")
+def api_scheduler_status():
+    with _scheduler_lock:
+        s = dict(_scheduler_state)
+    s["next_run_at_fmt"] = fmt_time(s.get("next_run_at")) if s.get("next_run_at") else None
+    s["last_run_at_fmt"] = fmt_time(s.get("last_run_at")) if s.get("last_run_at") else None
+    if s.get("next_run_at"):
+        s["next_run_in_sec"] = max(0, s["next_run_at"] - int(time.time()))
+    else:
+        s["next_run_in_sec"] = None
+    return jsonify(s)
+
+
+@app.post("/api/scheduler/config")
+def api_scheduler_config():
+    data = request.get_json(silent=True) or {}
+    with _scheduler_lock:
+        if "enabled" in data:
+            _scheduler_state["enabled"] = bool(data["enabled"])
+        if "interval_hours" in data:
+            iv = max(1, int(data["interval_hours"]))
+            _scheduler_state["interval_hours"] = iv
+            # 如果已启用，重算下次运行时间（如果新周期比当前 wait 更长，用新周期）
+            if _scheduler_state.get("last_run_at"):
+                _scheduler_state["next_run_at"] = _scheduler_state["last_run_at"] + iv * 3600
+    _save_scheduler_config()
+    return jsonify({"ok": True})
+
+
+@app.post("/api/scheduler/trigger")
+def api_scheduler_trigger():
+    """强制下次循环立即触发（10s 内跑）"""
+    with _scheduler_lock:
+        _scheduler_state["next_run_at"] = int(time.time())
+    return jsonify({"ok": True, "message": "10s 内将触发一次 collect"})
+
+
 def _make_job_id() -> str:
     return f"job-{int(time.time() * 1000)}-{_rnd.randint(1000, 9999)}"
 
@@ -969,6 +1110,9 @@ def main():
     _check_neighbors()
     port = int(os.environ.get("BILIHUB_PORT", "5678"))
     no_browser = os.environ.get("BILIHUB_NO_BROWSER", "").strip().lower() in ("1", "true", "yes")
+
+    # v1.7: 启动内置 BiliRadar 采集调度器（daemon 线程，服务停就停）
+    _start_scheduler()
 
     print(f"""
 ╔══════════════════════════════════════════════╗
