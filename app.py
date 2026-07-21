@@ -894,13 +894,11 @@ def api_watch_refresh_names():
                     except Exception:
                         pass
 
-                    # 3. 拿最近视频列表算总数 + 平均点赞（用 space wbi arc/search）
+                    # 3. 拿最近视频列表算总数 + 平均播放
                     time.sleep(0.35)
                     video_count = None
-                    avg_like = None
+                    recent_bvids = []
                     try:
-                        # 直接调 biliwatch 的 wbi 客户端太复杂，这里简化：
-                        # 用 space search 接口（新老都试），只求个总数
                         r = c.get(
                             "https://api.bilibili.com/x/space/arc/search",
                             params={"mid": mid, "pn": 1, "ps": 30, "order": "pubdate"}
@@ -910,20 +908,34 @@ def api_watch_refresh_names():
                             page = ((d3.get("data") or {}).get("page") or {})
                             video_count = page.get("count")
                             vlist = ((d3.get("data") or {}).get("list") or {}).get("vlist") or []
-                            # 平均点赞：拿前 20 首里 play 作参考（B 站列表不返回 like）
-                            # 只能算平均播放
-                            if vlist:
-                                plays = [v.get("play", 0) or 0 for v in vlist[:20]]
-                                if plays:
-                                    avg_play_from_list = sum(plays) // len(plays)
-                                else:
-                                    avg_play_from_list = None
-                            else:
-                                avg_play_from_list = None
+                            plays = [v.get("play", 0) or 0 for v in vlist[:20]]
+                            avg_play_from_list = (sum(plays) // len(plays)) if plays else None
+                            # 记下前 5 个 bvid 用于算均赞
+                            recent_bvids = [v.get("bvid") for v in vlist[:5] if v.get("bvid")]
                         else:
                             avg_play_from_list = None
                     except Exception:
                         avg_play_from_list = None
+
+                    # 4. v2.3 新增：拿前 5 个 bvid 的详情算真实平均点赞
+                    avg_like = None
+                    likes_collected = []
+                    for bvid in recent_bvids:
+                        try:
+                            time.sleep(0.3)
+                            r = c.get(
+                                "https://api.bilibili.com/x/web-interface/view",
+                                params={"bvid": bvid}
+                            )
+                            dv = r.json()
+                            if dv.get("code") == 0:
+                                like = ((dv.get("data") or {}).get("stat") or {}).get("like", 0)
+                                if like:
+                                    likes_collected.append(int(like))
+                        except Exception:
+                            pass
+                    if likes_collected:
+                        avg_like = sum(likes_collected) // len(likes_collected)
 
                     # 平均播放：优先总播放/视频数，兜底最近 20 平均
                     avg_view = None
@@ -941,7 +953,8 @@ def api_watch_refresh_names():
                         "video_count": video_count,
                         "total_view": total_view,
                         "avg_view": avg_view,
-                        "avg_like": avg_like,  # v2.0 暂不实现，需要遍历每个视频
+                        "avg_like": avg_like,
+                        "avg_like_sample_size": len(likes_collected),
                         "updated_at": now,
                     }
                     stats_updated += 1

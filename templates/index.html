@@ -69,14 +69,9 @@
 
     <div class="action-bar">
       <button class="btn primary" onclick="watchCheck()">🔍 立即检查所有订阅</button>
-      <button class="btn" onclick="refreshWatchNames()">🏷️ 刷新用户信息（含粉丝/视频/均播）</button>
+      <button class="btn" onclick="refreshWatchNames()">🏷️ 刷新用户信息（含粉丝/视频/均播/均赞）</button>
       <button class="btn" onclick="loadWatch()">🔄 刷新列表</button>
-    </div>
-
-    <!-- v2.2: UP 主总览面板 -->
-    <div class="card" id="watch-summary-card">
-      <h3>📊 全部订阅总览 <span class="hint" style="padding:0;">（首次使用请点上方「🏷️ 刷新用户信息」填充数据）</span></h3>
-      <div id="watch-summary-panel" class="summary-cards" style="margin: 0;"></div>
+      <span class="hint">💡 4 大数据显示在每个 UP 主卡片内 · 首次点「刷新用户信息」填充</span>
     </div>
 
     <div class="card">

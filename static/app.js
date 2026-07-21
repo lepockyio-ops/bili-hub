@@ -171,7 +171,6 @@ async function loadWatch() {
   try {
     const subs = await api("/api/watch/subs");
     document.getElementById("watch-count").textContent = subs.length;
-    renderWatchSummary(subs);
     const box = document.getElementById("watch-list");
     if (subs.length === 0) {
       box.innerHTML = '<div class="empty">暂无订阅。用上方表单添加你的第一个 UP 主。</div>';
@@ -192,15 +191,17 @@ async function loadWatch() {
         : '';
       const itemClass = isRecent ? 'item item-recent' : 'item';
 
-      // v2.0 新增数据（如果 refresh-names 拉过就有）
-      const statsLine = (s.fans != null || s.video_count != null || s.avg_view != null) ? `
+      // v2.3: 每位 UP 都显示 4 大字段（未填充时显示 —）
+      const hasAnyStat = s.fans != null || s.video_count != null || s.avg_view != null || s.avg_like != null;
+      const statsLine = `
         <div class="creator-stats">
-          ${s.fans != null ? `<span class="stat-chip">👥 <strong>${fmtNum(s.fans)}</strong> 粉丝</span>` : ''}
-          ${s.video_count != null ? `<span class="stat-chip">🎬 <strong>${s.video_count}</strong> 视频</span>` : ''}
-          ${s.avg_view != null ? `<span class="stat-chip">▶ 均播 <strong>${fmtNum(s.avg_view)}</strong></span>` : ''}
-          ${s.avg_like != null ? `<span class="stat-chip">❤ 均赞 <strong>${fmtNum(s.avg_like)}</strong></span>` : ''}
+          <span class="stat-chip" title="总粉丝数">👥 粉丝 <strong>${s.fans != null ? fmtNum(s.fans) : '—'}</strong></span>
+          <span class="stat-chip" title="总投稿视频数">🎬 视频 <strong>${s.video_count != null ? s.video_count : '—'}</strong></span>
+          <span class="stat-chip" title="近期作品平均播放">▶ 均播 <strong>${s.avg_view != null ? fmtNum(s.avg_view) : '—'}</strong></span>
+          <span class="stat-chip" title="近期作品平均点赞">❤ 均赞 <strong>${s.avg_like != null ? fmtNum(s.avg_like) : '—'}</strong></span>
+          ${!hasAnyStat ? '<span class="hint" style="padding:0;">→ 点顶部「🏷️ 刷新用户信息」填充</span>' : ''}
         </div>
-      ` : '';
+      `;
 
       return `
         <div class="${itemClass}">
