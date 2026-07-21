@@ -1081,11 +1081,12 @@ async function pollReportJob(jobId, uid, name) {
       loadReportJobs();
       if (j.status === "done") {
         const filename = j.output_file ? j.output_file.split(/[\\/]/).pop() : null;
+        const actionBtns = filename
+          ? `<a href="/api/report/download/${encodeURIComponent(filename)}" target="_blank" class="btn primary small" style="margin: 6px 4px 0 0;">🌐 打开</a>` +
+            `<a href="/api/report/download/${encodeURIComponent(filename)}?download=1" class="btn small" style="margin-top: 6px;">📥 下载 HTML</a>`
+          : "";
         toast("success", "✓ 报告已生成",
-          `<strong>${escapeHtml(name)}</strong> (UID ${uid})<br>` +
-          (filename
-            ? `<a href="/api/report/download/${encodeURIComponent(filename)}" target="_blank" class="btn primary small" style="margin-top:6px;">🌐 在浏览器打开</a>`
-            : ""),
+          `<strong>${escapeHtml(name)}</strong> (UID ${uid})<br>${actionBtns}`,
           25000);
         notify(`✓ 曲师报告已生成 · ${name}`, filename || "");
         loadReportOutputs();
@@ -1133,7 +1134,8 @@ async function loadReportJobs() {
       let action = '';
       if (j.output_file) {
         const fn = j.output_file.split(/[\\/]/).pop();
-        action = `<a class="btn primary small" href="/api/report/download/${encodeURIComponent(fn)}" target="_blank">🌐 打开</a>`;
+        action = `<a class="btn primary small" href="/api/report/download/${encodeURIComponent(fn)}" target="_blank">🌐 打开</a>` +
+                 `<a class="btn small" href="/api/report/download/${encodeURIComponent(fn)}?download=1" style="margin-left:4px;">📥</a>`;
       }
       return `
         <div class="item">
@@ -1174,7 +1176,8 @@ async function loadReportOutputs() {
           </div>
         </div>
         <div class="item-actions">
-          <a class="btn primary small" href="/api/report/download/${encodeURIComponent(f.name)}" target="_blank">🌐 打开</a>
+          <a class="btn primary small" href="/api/report/download/${encodeURIComponent(f.name)}" target="_blank" title="浏览器内直接渲染">🌐 打开</a>
+          <a class="btn small" href="/api/report/download/${encodeURIComponent(f.name)}?download=1" title="下载 HTML 到本地">📥 下载</a>
           <button class="btn danger small" onclick="deleteReport('${f.name.replace(/'/g, "\\'")}')">🗑</button>
         </div>
       </div>

@@ -1490,12 +1490,19 @@ def api_report_generate():
 
 @app.get("/api/report/download/<filename>")
 def api_report_download(filename: str):
+    """
+    默认 inline 让浏览器直接渲染。
+    v2.6: ?download=1 → 触发浏览器下载对话框保存到本地。
+    """
     if not filename.endswith(".html") or "/" in filename or "\\" in filename or ".." in filename:
         abort(400)
     p = REPORT_DIR / "output" / filename
     if not p.exists():
         abort(404)
-    # 用 inline 让浏览器直接渲染而非下载
+    as_attachment = request.args.get("download", "").strip() in ("1", "true", "yes")
+    if as_attachment:
+        return send_file(str(p), mimetype="text/html; charset=utf-8",
+                         as_attachment=True, download_name=filename)
     return send_file(str(p), mimetype="text/html; charset=utf-8")
 
 
