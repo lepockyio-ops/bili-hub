@@ -469,7 +469,254 @@ def index():
     return render_template("index.html")
 
 
+# ============================================================================
+# v2.1: SESSDATA 管理（写入 bili-comments/.env）
+# ============================================================================
+COMMENTS_ENV_PATH = COMMENTS_DIR / ".env"
+
+
+def _read_current_sessdata() -> str:
+    """从 bili-comments/.env 读当前 SESSDATA"""
+    if not COMMENTS_ENV_PATH.exists():
+        return ""
+    try:
+        with COMMENTS_ENV_PATH.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("BILI_SESSDATA="):
+                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return ""
+
+
+def _write_sessdata(new_val: str) -> bool:
+    """把 SESSDATA 写回 .env（保留其他行）"""
+    COMMENTS_ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
+    lines_out = []
+    replaced = False
+    if COMMENTS_ENV_PATH.exists():
+        with COMMENTS_ENV_PATH.open(encoding="utf-8") as f:
+            for line in f:
+                stripped = line.rstrip("\n").rstrip("\r")
+                if stripped.startswith("BILI_SESSDATA=") or stripped.startswith("# BILI_SESSDATA="):
+                    lines_out.append(f"BILI_SESSDATA={new_val}")
+                    replaced = True
+                else:
+                    lines_out.append(stripped)
+    if not replaced:
+        # 若无此行，追加
+        if lines_out and lines_out[-1]:
+            lines_out.append("")
+        lines_out.append("# BiliHub 生成的 SESSDATA 配置（勿泄露）")
+        lines_out.append(f"BILI_SESSDATA={new_val}")
+    with COMMENTS_ENV_PATH.open("w", encoding="utf-8") as f:
+        f.write("\n".join(lines_out) + "\n")
+    return True
+
+
+def _mask_sessdata(s: str) -> str:
+    """脱敏显示 SESSDATA，只保留前 8 + 后 4 字符"""
+    if not s:
+        return ""
+    if len(s) <= 20:
+        return s[:4] + "***"
+    return s[:8] + "***...***" + s[-4:]
+
+
+def _test_sessdata_validity(sess: str) -> dict:
+    """调 /x/web-interface/nav 验证 SESSDATA 是否有效"""
+    import httpx as _hx
+    if not sess:
+        return {"valid": False, "reason": "空值"}
+    try:
+        with _hx.Client(
+            timeout=10.0,
+            cookies={"SESSDATA": sess},
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+                "Referer": "https://www.bilibili.com/",
+            },
+        ) as c:
+            r = c.get("https://api.bilibili.com/x/web-interface/nav")
+            d = r.json()
+            code = d.get("code")
+            if code != 0:
+                return {"valid": False, "reason": f"API 返回 code={code} · {d.get('message','')}"}
+            data = d.get("data") or {}
+            if not data.get("isLogin"):
+                return {"valid": False, "reason": "isLogin=false 账号未登录"}
+            return {
+                "valid": True,
+                "uname": data.get("uname", ""),
+                "mid": data.get("mid", 0),
+                "level": ((data.get("level_info") or {}).get("current_level") or 0),
+                "vip": bool(((data.get("vipStatus") or 0)) or ((data.get("vip") or {}).get("status") == 1)),
+                "coins": data.get("money", 0),
+            }
+    except Exception as e:
+        return {"valid": False, "reason": f"请求异常: {e}"}
+
+
+@app.get("/api/sessdata/status")
+def api_sessdata_status():
+    sess = _read_current_sessdata()
+    if not sess:
+        return jsonify({
+            "configured": False,
+            "valid": False,
+            "masked": "",
+            "message": "未配置 SESSDATA（B站 API 只返回 3 条热门评论）",
+        })
+    result = _test_sessdata_validity(sess)
+    return jsonify({
+        "configured": True,
+        "valid": result.get("valid", False),
+        "masked": _mask_sessdata(sess),
+        "length": len(sess),
+        "detail": result,
+    })
+
+
+@app.post("/api/sessdata/test")
+def api_sessdata_test():
+    data = request.get_json(silent=True) or {}
+    sess = (data.get("sessdata") or "").strip()
+    if not sess:
+        return jsonify({"valid": False, "reason": "缺少 sessdata"}), 400
+    r = _test_sessdata_validity(sess)
+    return jsonify(r)
+
+
+@app.post("/api/sessdata/save")
+def api_sessdata_save():
+    data = request.get_json(silent=True) or {}
+    sess = (data.get("sessdata") or "").strip()
+    if not sess:
+        return jsonify({"error": "缺少 sessdata"}), 400
+    # 先测有效性（不强制，无效也允许保存但会警告）
+    result = _test_sessdata_validity(sess)
+    try:
+        _write_sessdata(sess)
+    except Exception as e:
+        return jsonify({"error": f"写入失败: {e}"}), 500
+    return jsonify({
+        "ok": True,
+        "saved_to": str(COMMENTS_ENV_PATH),
+        "masked": _mask_sessdata(sess),
+        "detail": result,
+    })
+
+
 MEMO_PATH = HUB_DIR / "data" / "memo.txt"
+
+# v2.1: SESSDATA 管理
+SESSDATA_ENV_PATH = COMMENTS_DIR / ".env"
+
+
+def _load_sessdata_from_env() -> str | None:
+    if not SESSDATA_ENV_PATH.exists():
+        return None
+    try:
+        for line in SESSDATA_ENV_PATH.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line.startswith("BILI_SESSDATA="):
+                val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                return val if val else None
+    except Exception:
+        pass
+    return None
+
+
+def _test_sessdata(sessdata: str) -> dict:
+    """测试 SESSDATA 是否有效 → 调 nav API 看是否登录成功。"""
+    try:
+        import httpx as _hx
+    except ImportError:
+        return {"valid": False, "error": "缺少 httpx"}
+    UA_local = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+    try:
+        with _hx.Client(timeout=8.0, cookies={"SESSDATA": sessdata},
+                        headers={"User-Agent": UA_local,
+                                 "Referer": "https://www.bilibili.com/"}) as c:
+            r = c.get("https://api.bilibili.com/x/web-interface/nav")
+            d = r.json()
+            if d.get("code") == 0:
+                data = d.get("data") or {}
+                is_login = bool(data.get("isLogin"))
+                return {
+                    "valid": is_login,
+                    "username": data.get("uname", "") if is_login else "",
+                    "uid": data.get("mid", 0) if is_login else 0,
+                    "level": ((data.get("level_info") or {}).get("current_level", 0)) if is_login else 0,
+                    "vip_status": ((data.get("vip") or {}).get("status", 0)) if is_login else 0,
+                    "money": data.get("money") if is_login else None,  # B 币余额
+                }
+            return {"valid": False, "error": d.get("message", "unknown")}
+    except Exception as e:
+        return {"valid": False, "error": str(e)}
+
+
+@app.get("/api/sessdata/status")
+def api_sessdata_status():
+    sessdata = _load_sessdata_from_env()
+    if not sessdata:
+        return jsonify({"exists": False, "valid": False, "message": "未设置 SESSDATA"})
+    if len(sessdata) > 20:
+        masked = sessdata[:10] + "..." + sessdata[-6:]
+    else:
+        masked = "***"
+    result = _test_sessdata(sessdata)
+    result["exists"] = True
+    result["masked"] = masked
+    result["length"] = len(sessdata)
+    return jsonify(result)
+
+
+@app.post("/api/sessdata/set")
+def api_sessdata_set():
+    data = request.get_json(silent=True) or {}
+    new_sess = (data.get("sessdata") or "").strip()
+    if not new_sess:
+        return jsonify({"error": "SESSDATA 不能为空"}), 400
+    # 先测试
+    test = _test_sessdata(new_sess)
+    if not test.get("valid"):
+        return jsonify({
+            "error": f"SESSDATA 无效或已过期（{test.get('error', '未登录')}）",
+            "test_result": test,
+        }), 400
+    # 保留 .env 的其他内容
+    SESSDATA_ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
+    other_lines = []
+    if SESSDATA_ENV_PATH.exists():
+        for line in SESSDATA_ENV_PATH.read_text(encoding="utf-8").splitlines():
+            if not line.strip().startswith("BILI_SESSDATA="):
+                other_lines.append(line)
+    content = ("\n".join(other_lines).rstrip() + f"\nBILI_SESSDATA={new_sess}\n").lstrip("\n")
+    SESSDATA_ENV_PATH.write_text(content, encoding="utf-8")
+    return jsonify({
+        "ok": True,
+        "username": test.get("username"),
+        "uid": test.get("uid"),
+        "level": test.get("level"),
+        "vip_status": test.get("vip_status"),
+    })
+
+
+@app.delete("/api/sessdata")
+def api_sessdata_delete():
+    if not SESSDATA_ENV_PATH.exists():
+        return jsonify({"ok": True, "message": ".env 不存在"})
+    other_lines = []
+    for line in SESSDATA_ENV_PATH.read_text(encoding="utf-8").splitlines():
+        if not line.strip().startswith("BILI_SESSDATA="):
+            other_lines.append(line)
+    if other_lines:
+        SESSDATA_ENV_PATH.write_text("\n".join(other_lines).strip() + "\n", encoding="utf-8")
+    else:
+        SESSDATA_ENV_PATH.unlink()
+    return jsonify({"ok": True})
 
 
 @app.get("/api/memo")

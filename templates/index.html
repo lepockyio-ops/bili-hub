@@ -29,6 +29,9 @@
     <a href="#report" class="nav-item" data-tab="report">
       <span class="icon">📄</span> UP 主月报告
     </a>
+    <a href="#settings" class="nav-item" data-tab="settings">
+      <span class="icon">⚙️</span> 设置
+    </a>
   </nav>
   <div class="sidebar-footer">
     <div class="version">v1.0</div>
@@ -263,6 +266,58 @@
     <div class="card">
       <h3>曲师列表 <span id="piracy-count" class="count-badge">0</span></h3>
       <div id="piracy-creators" class="list"></div>
+    </div>
+  </section>
+
+  <!-- ============ 设置 ============ -->
+  <section id="settings" class="tab">
+    <header class="tab-header">
+      <h1>⚙️ 设置</h1>
+      <p class="subtle">SESSDATA 管理 · 授权状态检查</p>
+    </header>
+
+    <div class="card">
+      <h3>🔑 SESSDATA · B 站登录凭证</h3>
+      <div id="sessdata-status" style="margin-bottom: 14px;">加载中...</div>
+
+      <div style="margin-bottom: 8px;">
+        <strong style="font-size: 13px;">粘贴新的 SESSDATA：</strong>
+      </div>
+      <textarea id="sessdata-input" rows="4" placeholder="从浏览器 F12 → Application → Cookies → bilibili.com → SESSDATA 复制的完整字符串..."
+                style="font-family: 'SFMono-Regular', Consolas, monospace; font-size: 12px;"></textarea>
+
+      <div class="form-row" style="margin-top: 10px; align-items: center;">
+        <button class="btn primary" onclick="saveSessdata()">💾 测试并保存</button>
+        <button class="btn" onclick="loadSessdataStatus()">🔄 检查当前状态</button>
+        <button class="btn danger" onclick="clearSessdata()">🗑 清除 SESSDATA</button>
+      </div>
+
+      <div class="alert info" style="margin-top: 16px; font-size: 12px;">
+        <strong>如何获取 SESSDATA：</strong><br>
+        1. Chrome 打开 <a href="https://www.bilibili.com/" target="_blank">https://www.bilibili.com/</a> 并确保已登录<br>
+        2. 按 <code>F12</code> 打开开发者工具<br>
+        3. 顶部标签切到 <strong>Application</strong>（应用程序）<br>
+        4. 左侧 <strong>Cookies</strong> → 点开 <code>https://www.bilibili.com</code><br>
+        5. 找 <code>SESSDATA</code> 那一行，复制 <strong>Value</strong> 列的完整字符串<br>
+        6. 粘贴到上方文本框 → 点 <strong>「💾 测试并保存」</strong>
+      </div>
+
+      <div class="alert warn" style="margin-top: 8px; font-size: 12px;">
+        ⚠️ SESSDATA 相当于登录凭证，不要泄露给他人。<br>
+        ⚠️ 在别的浏览器/手机重新登录 B 站会作废旧 SESSDATA，需要重新更新。<br>
+        ⚠️ 建议使用小号，避免高频请求触发主号风控。
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>ℹ️ SESSDATA 用于哪些工具</h3>
+      <ul style="color: var(--text-dim); font-size: 13px; padding-left: 20px;">
+        <li><strong>💬 评论收集</strong>：无 SESSDATA 时 B 站只返回 3-5 条评论；登录后可抓全量</li>
+        <li><strong>📄 UP 主月报告</strong>：暂不需要（用公共 API）</li>
+        <li><strong>🛡️ 侵权监测</strong>：暂不需要（用搜索 API）</li>
+        <li><strong>📊 数据雷达</strong>：暂不需要（用公共 view API）</li>
+        <li><strong>👀 UP 主监控</strong>：暂不需要（用 wbi 签名的公共接口）</li>
+      </ul>
     </div>
   </section>
 

@@ -30,6 +30,7 @@ window.addEventListener("load", () => {
   loadRadar();
   loadCommentsOutputs();
   loadCommentJobs();
+  loadSessdataStatus();
   loadReportOutputs();
   loadReportJobs();
   loadPiracyList();
@@ -1128,6 +1129,196 @@ function fmt_ts(ts) {
   if (!ts) return '—';
   return new Date(ts * 1000).toLocaleString('zh-CN');
 }
+
+// ============================================================================
+// v2.1: SESSDATA 管理
+// ============================================================================
+async function loadSessdataStatus() {
+  const box = document.getElementById("sessdata-status");
+  if (!box) return;
+  box.innerHTML = '<span class="subtle">检测中...</span>';
+  try {
+    const s = await api("/api/sessdata/status");
+    if (!s.exists) {
+      box.innerHTML = `
+        <div class="alert warn" style="margin: 0;">
+          <strong>未设置 SESSDATA</strong><br>
+          评论收集只能抓 3-5 条热门评论 · 无法抓全量
+        </div>`;
+      return;
+    }
+    if (s.valid) {
+      const vipBadge = s.vip_status ? '<span class="badge success" style="margin-left:8px;">大会员</span>' : '';
+      box.innerHTML = `
+        <div class="alert success" style="margin: 0;">
+          <strong>✓ SESSDATA 有效</strong> ${vipBadge}<br>
+          账号：<strong>${escapeHtml(s.username)}</strong> · UID ${s.uid} · Lv${s.level}<br>
+          <span class="subtle">已保存 ${s.length} 字符 · 前缀 <code>${escapeHtml(s.masked)}</code></span>
+        </div>`;
+    } else {
+      box.innerHTML = `
+        <div class="alert danger" style="margin: 0;">
+          <strong>✗ SESSDATA 已失效</strong>（${escapeHtml(s.error || '未登录')}）<br>
+          <span class="subtle">前缀 <code>${escapeHtml(s.masked || '')}</code> · 长度 ${s.length}</span><br>
+          请到 B 站重新登录后拿新的 SESSDATA 填入下方
+        </div>`;
+    }
+  } catch (e) {
+    box.innerHTML = `<div class="alert danger">状态检查失败: ${e.message}</div>`;
+  }
+}
+
+async function saveSessdata() {
+  const ta = document.getElementById("sessdata-input");
+  const val = (ta?.value || "").trim();
+  if (!val) { toast("warn", "缺少输入", "请粘贴 SESSDATA"); return; }
+  if (val.length < 20) {
+    toast("warn", "疑似格式错误", `SESSDATA 长度通常 > 100 字符，你只输入了 ${val.length} 字符`);
+    return;
+  }
+  showLoading("测试中（正在向 B 站验证）...");
+  try {
+    const r = await api("/api/sessdata/set", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({sessdata: val})
+    });
+    if (r.error) {
+      toast("danger", "验证失败", r.error, 15000);
+      return;
+    }
+    ta.value = "";
+    toast("success", "✓ SESSDATA 已保存",
+      `账号：<strong>${escapeHtml(r.username)}</strong> · UID ${r.uid} · Lv${r.level}<br>` +
+      `现在评论收集可以抓全量评论了`, 8000);
+    loadSessdataStatus();
+  } catch (e) {
+    toast("danger", "保存失败", e.message);
+  } finally {
+    hideLoading();
+  }
+}
+
+async function clearSessdata() {
+  if (!confirm("🗑 确定清除 SESSDATA？\n\n清除后评论收集只能抓 3-5 条热门评论。")) return;
+  try {
+    await api("/api/sessdata", {method: "DELETE"});
+    toast("info", "已清除 SESSDATA", "评论收集现在处于匿名模式");
+    loadSessdataStatus();
+  } catch (e) { toast("danger", "清除失败", e.message); }
+}
+
+// ============================================================================
+// v2.1: SESSDATA 设置
+// ============================================================================
+async function loadSessdataStatus() {
+  const badge = document.getElementById("sessdata-badge");
+  const info = document.getElementById("sessdata-info");
+  if (!badge || !info) return;
+  try {
+    const s = await api("/api/sessdata/status");
+    if (!s.configured) {
+      badge.className = "status-badge off";
+      badge.textContent = "未配置";
+      info.className = "scheduler-status disabled";
+      info.innerHTML = `
+        <div class="kv">${escapeHtml(s.message || "未配置 SESSDATA")}</div>
+        <div class="kv" style="color: var(--warn);">⚠️ 未登录时 B 站只返回 3 条热门评论</div>
+      `;
+    } else if (s.valid) {
+      badge.className = "status-badge on";
+      badge.textContent = "有效";
+      const d = s.detail || {};
+      info.className = "scheduler-status running";
+      info.innerHTML = `
+        <div class="kv">当前值 <strong>${escapeHtml(s.masked)}</strong> (${s.length} 字符)</div>
+        <div class="kv">用户 <strong>${escapeHtml(d.uname || "")}</strong> (UID ${d.mid || "—"})</div>
+        <div class="kv">Lv ${d.level || 0} ${d.vip ? "· 大会员" : ""}</div>
+      `;
+    } else {
+      badge.className = "status-badge off";
+      badge.textContent = "已失效";
+      info.className = "scheduler-status";
+      info.innerHTML = `
+        <div class="kv" style="color: var(--danger);">⚠️ ${escapeHtml((s.detail || {}).reason || "SESSDATA 已过期")}</div>
+        <div class="kv">当前值 <strong>${escapeHtml(s.masked)}</strong> (${s.length} 字符)</div>
+        <div class="kv">请到 bilibili.com 重新登录后复制新的 SESSDATA 粘贴保存</div>
+      `;
+    }
+  } catch (e) {
+    info.innerHTML = `<span style="color: var(--danger);">加载失败: ${e.message}</span>`;
+  }
+}
+
+async function sessdataTest() {
+  const val = document.getElementById("sessdata-input").value.trim();
+  if (!val) { toast("warn", "请先粘贴 SESSDATA", ""); return; }
+  showLoading("测试中...");
+  try {
+    const r = await api("/api/sessdata/test", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({sessdata: val})
+    });
+    hideLoading();
+    if (r.valid) {
+      toast("success", "✓ SESSDATA 有效",
+        `用户 <strong>${escapeHtml(r.uname || "")}</strong> (UID ${r.mid}) · Lv ${r.level} ${r.vip ? "· 大会员" : ""}`,
+        8000);
+    } else {
+      toast("danger", "✗ SESSDATA 无效", escapeHtml(r.reason || "未知原因"), 10000);
+    }
+  } catch (e) {
+    hideLoading();
+    toast("danger", "测试失败", e.message);
+  }
+}
+
+async function sessdataSave() {
+  const val = document.getElementById("sessdata-input").value.trim();
+  if (!val) { toast("warn", "请先粘贴 SESSDATA", ""); return; }
+  if (val.length < 30) {
+    if (!confirm("SESSDATA 长度看起来不对（少于 30 字符）。仍要保存吗？")) return;
+  }
+  showLoading("保存中...");
+  try {
+    const r = await api("/api/sessdata/save", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({sessdata: val})
+    });
+    hideLoading();
+    if (r.error) { toast("danger", "保存失败", r.error); return; }
+    const d = r.detail || {};
+    if (d.valid) {
+      toast("success", "💾 已保存 · 凭证有效",
+        `用户 <strong>${escapeHtml(d.uname || "")}</strong> (UID ${d.mid}) · 下次评论收集立即生效`,
+        10000);
+    } else {
+      toast("warn", "💾 已保存 · 但凭证无效",
+        `原因: ${escapeHtml(d.reason || "")}<br>建议重新登录 B 站获取新 SESSDATA`,
+        15000);
+    }
+    document.getElementById("sessdata-input").value = "";
+    loadSessdataStatus();
+  } catch (e) {
+    hideLoading();
+    toast("danger", "保存失败", e.message);
+  }
+}
+
+function sessdataToggleShow() {
+  const input = document.getElementById("sessdata-input");
+  const btn = document.getElementById("sessdata-toggle");
+  if (input.type === "password") {
+    input.type = "text";
+    btn.textContent = "🙈 隐藏";
+  } else {
+    input.type = "password";
+    btn.textContent = "👁 显示";
+  }
+}
+
 
 // ============================================================================
 // v1.8: BiliAntiPiracy 侵权监测
