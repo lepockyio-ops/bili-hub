@@ -177,9 +177,9 @@ async function loadWatch() {
       box.innerHTML = '<div class="empty">暂无订阅。用上方表单添加你的第一个 UP 主。</div>';
       return;
     }
-    // v1.5: 48h 内有新投稿 → 高亮标记
+    // v2.5: 72h 内有新投稿 → 高亮标记
     const nowSec = Math.floor(Date.now() / 1000);
-    const RECENT_WINDOW = 48 * 3600;
+    const RECENT_WINDOW = 72 * 3600;
     box.innerHTML = subs.map(s => {
       const isPlaceholder = /^UID\d+$/.test(s.name || "");
       const displayName = isPlaceholder
@@ -188,7 +188,7 @@ async function loadWatch() {
       const isRecent = s.last_created_ts && (nowSec - s.last_created_ts) <= RECENT_WINDOW;
       const hoursAgo = s.last_created_ts ? Math.round((nowSec - s.last_created_ts) / 3600) : null;
       const recentBadge = isRecent
-        ? `<span class="badge fresh" title="过去 48h 内的新投稿">🔥 ${hoursAgo}h 前</span>`
+        ? `<span class="badge fresh" title="过去 72h 内的新投稿">🔥 ${hoursAgo}h 前</span>`
         : '';
       const itemClass = isRecent ? 'item item-recent' : 'item';
 

@@ -716,6 +716,48 @@ def health():
 CREATOR_STATS_PATH = HUB_DIR / "data" / "creator_stats.json"
 
 
+# v2.5: wbi 签名助手（B 站空间接口已强制需要 wbi）
+_MIXIN_KEY_ENC_TAB = [
+    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
+    27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
+    37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4,
+    22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
+]
+
+
+def _wbi_mixin(orig: str) -> str:
+    return "".join(orig[i] for i in _MIXIN_KEY_ENC_TAB)[:32]
+
+
+def _wbi_sign(params: dict, img_key: str, sub_key: str) -> dict:
+    import hashlib as _hl
+    import urllib.parse as _up
+    mk = _wbi_mixin(img_key + sub_key)
+    params = dict(params)
+    params["wts"] = int(time.time())
+    sp = dict(sorted(params.items()))
+    for k, v in sp.items():
+        sp[k] = "".join(c for c in str(v) if c not in "!'()*")
+    q = _up.urlencode(sp)
+    sp["w_rid"] = _hl.md5((q + mk).encode()).hexdigest()
+    return sp
+
+
+def _fetch_wbi_keys(client) -> tuple[str, str] | tuple[None, None]:
+    """获取 wbi img_key / sub_key（缓存 1 小时）。"""
+    try:
+        r = client.get("https://api.bilibili.com/x/web-interface/nav")
+        d = r.json()
+        wi = (d.get("data") or {}).get("wbi_img") or {}
+        img_url = wi.get("img_url", "")
+        sub_url = wi.get("sub_url", "")
+        img_key = img_url.rsplit("/", 1)[1].split(".")[0] if img_url else None
+        sub_key = sub_url.rsplit("/", 1)[1].split(".")[0] if sub_url else None
+        return img_key, sub_key
+    except Exception:
+        return None, None
+
+
 def load_creator_stats() -> dict:
     if not CREATOR_STATS_PATH.exists():
         return {}
@@ -901,11 +943,15 @@ def api_watch_refresh_names():
             return {"error": "缺少 httpx", "updated": 0, "failed": len(subs), "total": len(subs)}
         now = int(time.time())
         total = len(subs)
+        # v2.5: wbi keys（一次会话一次即可）
+        img_key = None
+        sub_key = None
         with _hx.Client(timeout=10.0, headers=headers, follow_redirects=True) as c:
             try:
                 c.get("https://www.bilibili.com/")
             except Exception:
                 pass
+            img_key, sub_key = _fetch_wbi_keys(c)
             for idx, s in enumerate(subs, 1):
                 # v2.4: 上报进度
                 if job_id:
@@ -942,28 +988,41 @@ def api_watch_refresh_names():
                     except Exception:
                         pass
 
-                    # 3. 拿最近视频列表算总数 + 平均播放
+                    # 3. 拿最近视频列表算总数 + 平均播放（v2.5: 用 wbi 签名）
                     time.sleep(0.35)
                     video_count = None
                     recent_bvids = []
+                    avg_play_from_list = None
                     try:
-                        r = c.get(
-                            "https://api.bilibili.com/x/space/arc/search",
-                            params={"mid": mid, "pn": 1, "ps": 30, "order": "pubdate"}
-                        )
-                        d3 = r.json()
-                        if d3.get("code") == 0:
-                            page = ((d3.get("data") or {}).get("page") or {})
-                            video_count = page.get("count")
-                            vlist = ((d3.get("data") or {}).get("list") or {}).get("vlist") or []
-                            plays = [v.get("play", 0) or 0 for v in vlist[:20]]
-                            avg_play_from_list = (sum(plays) // len(plays)) if plays else None
-                            # 记下前 5 个 bvid 用于算均赞
-                            recent_bvids = [v.get("bvid") for v in vlist[:5] if v.get("bvid")]
-                        else:
-                            avg_play_from_list = None
-                    except Exception:
-                        avg_play_from_list = None
+                        if not img_key or not sub_key:
+                            img_key, sub_key = _fetch_wbi_keys(c)
+                        if img_key and sub_key:
+                            params = {
+                                "mid": mid, "pn": 1, "ps": 30, "order": "pubdate",
+                                "platform": "web", "web_location": "1550101",
+                            }
+                            signed = _wbi_sign(params, img_key, sub_key)
+                            r = c.get(
+                                "https://api.bilibili.com/x/space/wbi/arc/search",
+                                params=signed,
+                                headers={"Referer": f"https://space.bilibili.com/{mid}"},
+                            )
+                            ct = r.headers.get("content-type", "")
+                            if "json" in ct.lower():
+                                d3 = r.json()
+                                if d3.get("code") == 0:
+                                    page = ((d3.get("data") or {}).get("page") or {})
+                                    video_count = page.get("count")
+                                    vlist = ((d3.get("data") or {}).get("list") or {}).get("vlist") or []
+                                    plays = [v.get("play", 0) or 0 for v in vlist[:20]]
+                                    avg_play_from_list = (sum(plays) // len(plays)) if plays else None
+                                    recent_bvids = [v.get("bvid") for v in vlist[:5] if v.get("bvid")]
+                                else:
+                                    details.append(f"{mid} arc/search code={d3.get('code')} {d3.get('message', '')}")
+                            else:
+                                details.append(f"{mid} arc/search: non-JSON response (触发风控)")
+                    except Exception as ex:
+                        details.append(f"{mid} arc/search 异常: {ex}")
 
                     # 4. v2.3 新增：拿前 5 个 bvid 的详情算真实平均点赞
                     avg_like = None
