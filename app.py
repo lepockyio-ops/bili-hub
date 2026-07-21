@@ -236,8 +236,24 @@ _bg_jobs = {}  # {job_id: {kind, status, started_at, finished_at, ...}}
 _bg_lock = threading.Lock()
 
 
+def _bg_job_progress(job_id: str, current=None, total=None, message=None):
+    """v2.4: worker 里主动上报进度供前端进度条显示。"""
+    with _bg_lock:
+        if job_id not in _bg_jobs:
+            return
+        if current is not None:
+            _bg_jobs[job_id]["progress_current"] = int(current)
+        if total is not None:
+            _bg_jobs[job_id]["progress_total"] = int(total)
+        if message is not None:
+            _bg_jobs[job_id]["progress_message"] = str(message)
+
+
 def _bg_job_start(kind: str, meta: dict, worker_fn):
-    """启动一个通用后台任务。worker_fn() 返回 dict 会 merge 到 job。"""
+    """
+    启动通用后台任务。
+    v2.4: worker_fn 可选接收 job_id 参数，通过 _bg_job_progress() 上报进度。
+    """
     job_id = f"{kind}-{int(time.time() * 1000)}-{_rnd.randint(1000, 9999)}"
     with _bg_lock:
         _bg_jobs[job_id] = {
@@ -246,6 +262,9 @@ def _bg_job_start(kind: str, meta: dict, worker_fn):
             "status": "queued",
             "started_at": int(time.time()),
             "finished_at": None,
+            "progress_current": 0,
+            "progress_total": 0,
+            "progress_message": "",
             **meta,
         }
 
@@ -254,7 +273,13 @@ def _bg_job_start(kind: str, meta: dict, worker_fn):
             if job_id in _bg_jobs:
                 _bg_jobs[job_id]["status"] = "running"
         try:
-            result = worker_fn() or {}
+            # v2.4: 兼容 worker(job_id) 或 worker()
+            import inspect as _insp
+            sig = _insp.signature(worker_fn)
+            if len(sig.parameters) > 0:
+                result = worker_fn(job_id) or {}
+            else:
+                result = worker_fn() or {}
             with _bg_lock:
                 if job_id in _bg_jobs:
                     _bg_jobs[job_id]["status"] = "done"
@@ -270,6 +295,15 @@ def _bg_job_start(kind: str, meta: dict, worker_fn):
     _prune_bg_jobs()
     threading.Thread(target=_run, daemon=True).start()
     return job_id
+
+
+@app.get("/api/jobs/active")
+def api_jobs_active():
+    """v2.4: 返回当前所有 queued/running 的 job，供前端进度浮层展示"""
+    with _bg_lock:
+        jobs = [dict(j) for j in _bg_jobs.values() if j.get("status") in ("queued", "running")]
+    jobs.sort(key=lambda j: j.get("started_at", 0))
+    return jsonify(jobs)
 
 
 def _prune_bg_jobs(max_keep: int = 30):
@@ -808,7 +842,11 @@ def api_watch_check():
 
     subs_count = len(watch_load_config().get("subscriptions") or [])
 
-    def worker():
+    def worker(job_id=None):
+        # v2.4: watch-check 无法实时上报，估算基于订阅数 × 8s/UP
+        if job_id:
+            _bg_job_progress(job_id, current=0, total=subs_count,
+                             message=f"biliwatch.py 正在检查 {subs_count} 个订阅...")
         r = run_tool(WATCH_DIR, ["biliwatch.py", "check"], timeout=1800)
         new_videos = []
         errors = []
@@ -817,6 +855,9 @@ def api_watch_check():
                 new_videos.append(line[6:])
             elif line.startswith("ERR | "):
                 errors.append(line[6:])
+        if job_id:
+            _bg_job_progress(job_id, current=subs_count, total=subs_count,
+                             message=f"完成 · 新稿件 {len(new_videos)} · 错误 {len(errors)}")
         return {
             "returncode": r.get("returncode"),
             "stdout": r.get("stdout", ""),
@@ -842,7 +883,7 @@ def api_watch_refresh_names():
     if not subs:
         return jsonify({"error": "无订阅"}), 400
 
-    def worker():
+    def worker(job_id=None):
         cfg = watch_load_config()
         subs = cfg.get("subscriptions") or []
         stats_cache = load_creator_stats()
@@ -859,12 +900,19 @@ def api_watch_refresh_names():
         except ImportError:
             return {"error": "缺少 httpx", "updated": 0, "failed": len(subs), "total": len(subs)}
         now = int(time.time())
+        total = len(subs)
         with _hx.Client(timeout=10.0, headers=headers, follow_redirects=True) as c:
             try:
                 c.get("https://www.bilibili.com/")
             except Exception:
                 pass
-            for s in subs:
+            for idx, s in enumerate(subs, 1):
+                # v2.4: 上报进度
+                if job_id:
+                    _bg_job_progress(
+                        job_id, current=idx, total=total,
+                        message=f"处理 {s.get('name', s['uid'])} ({idx}/{total})"
+                    )
                 mid = s["uid"]
                 try:
                     # 1. 拿 card（含 name 和 fans）

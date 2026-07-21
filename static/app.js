@@ -38,6 +38,7 @@ window.addEventListener("load", () => {
   // 恢复未完成的 job 轮询（例如页面刷新后）
   resumePollingRunningJobs();
   resumePollingReportJobs();
+  resumeActiveProgress();
   // 调度器状态每 15s 自动刷新
   setInterval(loadSchedulerStatus, 15000);
 });
@@ -340,10 +341,11 @@ async function watchCheck() {
       toast(
         "info",
         "🔍 检查已开始",
-        `<strong>${r.subs_count}</strong> 个订阅在后台运行中，预计约 ${secs}s 完成<br>你可以继续操作其他功能。`,
+        `<strong>${r.subs_count}</strong> 个订阅在后台运行中，预计约 ${secs}s 完成<br>右下角进度条可查看状态。`,
         6000,
       );
       pollBgJob(r.job_id, "watch-check");
+      trackProgressJob(r.job_id);  // v2.4: 右下角进度浮层
     }
   } catch (e) {
     toast("danger", "启动失败", e.message);
@@ -358,10 +360,11 @@ async function refreshWatchNames() {
     const r = await api("/api/watch/refresh-names", {method: "POST"});
     if (r.error) { toast("danger", "启动失败", r.error); return; }
     if (r.job_id) {
-      toast("info", "🏷️ 正在拉取用户名",
-        `后台运行中（约 ${Math.ceil(document.getElementById('watch-count').textContent * 0.5)}s）`,
+      toast("info", "🏷️ 正在拉取用户信息",
+        `后台运行 · 右下角进度条可查看当前处理哪位曲师`,
         5000);
       pollBgJob(r.job_id, "refresh-names");
+      trackProgressJob(r.job_id);  // v2.4
     }
   } catch (e) {
     toast("danger", "启动失败", e.message);
@@ -746,6 +749,7 @@ async function commentsExtract() {
     }
     for (const j of jobs) {
       pollCommentJob(j.job_id, j.bvid);
+      trackProgressJob(j.job_id, `💬 抓取评论 · ${j.bvid}`);  // v2.4
     }
     loadCommentJobs();
     document.getElementById("comm-bvid").value = "";
@@ -897,6 +901,112 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
+// ============================================================================
+// v2.4: 后台任务进度浮层
+// ============================================================================
+const KIND_LABELS = {
+  "watch-check": "🔍 检查订阅",
+  "watch-refresh-names": "🏷️ 刷新用户信息",
+  "piracy-scan": "🛡️ 侵权扫描",
+  "creator-report": "📄 生成月报告",
+  "comments-extract": "💬 抓取评论",
+};
+const _trackedJobs = new Set();
+
+function trackProgressJob(jobId, titleOverride) {
+  if (_trackedJobs.has(jobId)) return;
+  _trackedJobs.add(jobId);
+  _pollJobProgress(jobId, titleOverride);
+}
+
+async function _pollJobProgress(jobId, titleOverride) {
+  const tray = document.getElementById("progress-tray");
+  if (!tray) return;
+  let card = document.getElementById("prog-" + jobId);
+  if (!card) {
+    card = document.createElement("div");
+    card.className = "progress-card";
+    card.id = "prog-" + jobId;
+    tray.appendChild(card);
+  }
+  const startedAt = Math.floor(Date.now() / 1000);
+
+  while (true) {
+    try {
+      const j = await api(`/api/jobs/${jobId}`);
+      if (!j || j.status === "unknown") {
+        removeProgressCard(jobId);
+        break;
+      }
+      const cur = j.progress_current || 0;
+      const tot = j.progress_total || 0;
+      const msg = j.progress_message || "";
+      const elapsed = (j.duration_sec != null) ? j.duration_sec :
+                      (Math.floor(Date.now() / 1000) - startedAt);
+      const title = titleOverride
+        || (j.name ? `${KIND_LABELS[j.kind] || j.kind} · ${j.name}` : (KIND_LABELS[j.kind] || j.kind));
+      const pct = (tot > 0) ? Math.min(100, Math.round(cur / tot * 100)) : null;
+      renderProgressCard(card, {
+        title, status: j.status, current: cur, total: tot, pct,
+        message: msg, elapsed, kind: j.kind, jobId
+      });
+      if (j.status === "done" || j.status === "failed") {
+        // 3 秒后自动淡出
+        setTimeout(() => removeProgressCard(jobId), 3500);
+        break;
+      }
+    } catch (e) {
+      console.error("progress poll err:", e);
+      break;
+    }
+    await sleep(2000);
+  }
+}
+
+function renderProgressCard(card, s) {
+  card.classList.remove("done", "failed");
+  if (s.status === "done") card.classList.add("done");
+  else if (s.status === "failed") card.classList.add("failed");
+
+  const barInner = (s.pct != null)
+    ? `<div class="progress-bar-inner" style="width: ${s.pct}%;"></div>`
+    : `<div class="progress-bar-inner indeterminate"></div>`;
+  const statusText = ({queued: "排队中", running: "运行中", done: "已完成", failed: "失败"})[s.status] || s.status;
+  const pctText = s.pct != null ? ` · ${s.pct}%` : '';
+  const countText = (s.current && s.total) ? `${s.current} / ${s.total}` : '';
+
+  card.innerHTML = `
+    <div class="progress-header">
+      <div class="progress-title">${escapeHtml(s.title)}</div>
+      <button class="progress-close" onclick="removeProgressCard('${s.jobId}')" title="关闭">×</button>
+    </div>
+    <div class="progress-bar-outer">${barInner}</div>
+    <div class="progress-msg">${s.message ? escapeHtml(s.message) : (statusText + (countText ? ` · ${countText}` : ''))}</div>
+    <div class="progress-meta">
+      <span>${statusText}${pctText}</span>
+      <span>⏱ ${s.elapsed}s</span>
+    </div>
+  `;
+}
+
+function removeProgressCard(jobId) {
+  _trackedJobs.delete(jobId);
+  const card = document.getElementById("prog-" + jobId);
+  if (!card) return;
+  card.classList.add("exiting");
+  setTimeout(() => card.remove(), 300);
+}
+
+// 页面加载时恢复正在运行的进度
+async function resumeActiveProgress() {
+  try {
+    const jobs = await api("/api/jobs/active");
+    for (const j of (jobs || [])) {
+      trackProgressJob(j.id);
+    }
+  } catch (e) { /* ignore */ }
+}
+
 /**
  * 删除评论输出的 XLSX 文件
  */
@@ -950,6 +1060,7 @@ async function reportGenerate() {
     }
     for (const j of jobs) {
       pollReportJob(j.job_id, j.uid, j.name);
+      trackProgressJob(j.job_id, `📄 月报告 · ${j.name}`);  // v2.4
     }
     loadReportJobs();
     document.getElementById("report-uid").value = "";
@@ -1525,6 +1636,7 @@ async function piracyScan(uid, name) {
       toast("info", "🔍 扫描已开始",
         `<strong>${escapeHtml(name)}</strong> · 约 15-40 秒完成<br>完成后自动展开结果`, 5000);
       pollPiracyJob(r.jobs[0].job_id, uid, name);
+      trackProgressJob(r.jobs[0].job_id, `🛡️ 侵权扫描 · ${name}`);  // v2.4
     }
   } catch (e) {
     toast("danger", "启动失败", e.message);

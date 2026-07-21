@@ -514,6 +514,106 @@ input[type="checkbox"] { cursor: pointer; }
 .modal-creator-item .name { flex: 1; }
 .modal-creator-item .uid { color: var(--text-dim); font-size: 11px; }
 
+/* v2.4: 进度托盘（右下角浮层） */
+#progress-tray {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 9997;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 8px;
+  pointer-events: none;
+}
+.progress-card {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  padding: 12px 14px;
+  min-width: 320px;
+  max-width: 400px;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.35);
+  pointer-events: auto;
+  animation: progressSlideIn 0.25s ease-out;
+}
+@keyframes progressSlideIn {
+  from { transform: translateX(120%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+.progress-card.exiting { animation: progressSlideOut 0.25s ease-in forwards; }
+@keyframes progressSlideOut {
+  to { transform: translateX(120%); opacity: 0; }
+}
+.progress-card.done { border-left-color: var(--success); }
+.progress-card.failed { border-left-color: var(--danger); }
+.progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.progress-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  flex: 1;
+}
+.progress-close {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 18px;
+  padding: 0 4px;
+  line-height: 1;
+}
+.progress-close:hover { color: var(--danger); }
+.progress-bar-outer {
+  background: var(--bg-3);
+  border-radius: 4px;
+  height: 8px;
+  overflow: hidden;
+  margin-bottom: 6px;
+  position: relative;
+}
+.progress-bar-inner {
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  height: 100%;
+  transition: width 0.4s ease;
+  border-radius: 4px;
+  min-width: 4px;
+}
+.progress-card.done .progress-bar-inner {
+  background: var(--success);
+  width: 100% !important;
+}
+.progress-card.failed .progress-bar-inner {
+  background: var(--danger);
+  width: 100% !important;
+}
+.progress-bar-inner.indeterminate {
+  width: 40% !important;
+  animation: progressPulse 1.5s ease-in-out infinite;
+}
+@keyframes progressPulse {
+  0% { transform: translateX(-100%); }
+  50% { transform: translateX(150%); }
+  100% { transform: translateX(-100%); }
+}
+.progress-msg {
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.progress-meta {
+  color: var(--text-dim);
+  font-size: 10px;
+  margin-top: 4px;
+  display: flex;
+  justify-content: space-between;
+}
+
 /* ---------- Pre / Log ---------- */
 pre {
   background: var(--bg);
