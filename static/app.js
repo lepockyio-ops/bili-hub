@@ -1139,7 +1139,7 @@ async function loadSessdataStatus() {
   box.innerHTML = '<span class="subtle">检测中...</span>';
   try {
     const s = await api("/api/sessdata/status");
-    if (!s.exists) {
+    if (!s.configured) {
       box.innerHTML = `
         <div class="alert warn" style="margin: 0;">
           <strong>未设置 SESSDATA</strong><br>
@@ -1147,18 +1147,19 @@ async function loadSessdataStatus() {
         </div>`;
       return;
     }
+    const d = s.detail || {};
     if (s.valid) {
-      const vipBadge = s.vip_status ? '<span class="badge success" style="margin-left:8px;">大会员</span>' : '';
+      const vipBadge = d.vip ? '<span class="badge success" style="margin-left:8px;">大会员</span>' : '';
       box.innerHTML = `
         <div class="alert success" style="margin: 0;">
           <strong>✓ SESSDATA 有效</strong> ${vipBadge}<br>
-          账号：<strong>${escapeHtml(s.username)}</strong> · UID ${s.uid} · Lv${s.level}<br>
-          <span class="subtle">已保存 ${s.length} 字符 · 前缀 <code>${escapeHtml(s.masked)}</code></span>
+          账号：<strong>${escapeHtml(d.uname || '')}</strong> · UID ${d.mid || '-'} · Lv${d.level || 0}<br>
+          <span class="subtle">已保存 ${s.length || 0} 字符 · 前缀 <code>${escapeHtml(s.masked || '')}</code></span>
         </div>`;
     } else {
       box.innerHTML = `
         <div class="alert danger" style="margin: 0;">
-          <strong>✗ SESSDATA 已失效</strong>（${escapeHtml(s.error || '未登录')}）<br>
+          <strong>✗ SESSDATA 已失效</strong>（${escapeHtml(d.reason || '未登录')}）<br>
           <span class="subtle">前缀 <code>${escapeHtml(s.masked || '')}</code> · 长度 ${s.length}</span><br>
           请到 B 站重新登录后拿新的 SESSDATA 填入下方
         </div>`;
@@ -1178,19 +1179,26 @@ async function saveSessdata() {
   }
   showLoading("测试中（正在向 B 站验证）...");
   try {
-    const r = await api("/api/sessdata/set", {
+    // 用 /api/sessdata/save（后端已实现）
+    const r = await api("/api/sessdata/save", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({sessdata: val})
     });
     if (r.error) {
-      toast("danger", "验证失败", r.error, 15000);
+      toast("danger", "保存失败", r.error, 15000);
       return;
     }
     ta.value = "";
-    toast("success", "✓ SESSDATA 已保存",
-      `账号：<strong>${escapeHtml(r.username)}</strong> · UID ${r.uid} · Lv${r.level}<br>` +
-      `现在评论收集可以抓全量评论了`, 8000);
+    const d = r.detail || {};
+    if (d.valid) {
+      toast("success", "✓ SESSDATA 已保存",
+        `账号：<strong>${escapeHtml(d.uname || '')}</strong> · UID ${d.mid} · Lv${d.level || 0}<br>` +
+        `现在评论收集可以抓全量评论了`, 8000);
+    } else {
+      toast("warn", "已保存但未通过验证",
+        `原因: ${escapeHtml(d.reason || '未登录')}<br>可能需要更新一次`, 12000);
+    }
     loadSessdataStatus();
   } catch (e) {
     toast("danger", "保存失败", e.message);
