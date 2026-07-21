@@ -171,6 +171,7 @@ async function loadWatch() {
   try {
     const subs = await api("/api/watch/subs");
     document.getElementById("watch-count").textContent = subs.length;
+    renderWatchSummary(subs);
     const box = document.getElementById("watch-list");
     if (subs.length === 0) {
       box.innerHTML = '<div class="empty">暂无订阅。用上方表单添加你的第一个 UP 主。</div>';
@@ -225,6 +226,69 @@ async function loadWatch() {
   } catch (e) {
     document.getElementById("watch-list").innerHTML = `<div class="alert danger">加载失败: ${e.message}</div>`;
   }
+}
+
+/**
+ * v2.2: 全部订阅总览面板 - 聚合 4 个 KPI + 48h 新投稿数
+ */
+function renderWatchSummary(subs) {
+  const panel = document.getElementById("watch-summary-panel");
+  if (!panel) return;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const RECENT = 48 * 3600;
+
+  // 聚合
+  const withStats = subs.filter(s => s.fans != null || s.video_count != null);
+  let totalFans = 0, totalVideos = 0, sumAvgView = 0, sumAvgLike = 0;
+  let cntView = 0, cntLike = 0;
+  for (const s of withStats) {
+    if (s.fans != null) totalFans += s.fans;
+    if (s.video_count != null) totalVideos += s.video_count;
+    if (s.avg_view != null) { sumAvgView += s.avg_view; cntView++; }
+    if (s.avg_like != null) { sumAvgLike += s.avg_like; cntLike++; }
+  }
+  const avgViewAcross = cntView > 0 ? Math.round(sumAvgView / cntView) : null;
+  const avgLikeAcross = cntLike > 0 ? Math.round(sumAvgLike / cntLike) : null;
+  const recentCount = subs.filter(s => s.last_created_ts && (nowSec - s.last_created_ts) <= RECENT).length;
+
+  if (withStats.length === 0) {
+    panel.innerHTML = `
+      <div class="stat-card" style="grid-column: 1 / -1; text-align: center;">
+        <div class="label">⚠️ 未拉取到统计数据</div>
+        <div class="value" style="font-size: 14px; color: var(--warn);">请点上方「🏷️ 刷新用户信息」按钮</div>
+        <div class="sub">首次约 1-2 分钟，之后本地缓存</div>
+      </div>
+    `;
+    return;
+  }
+
+  panel.innerHTML = `
+    <div class="stat-card">
+      <div class="label">👥 合计粉丝</div>
+      <div class="value">${fmtNum(totalFans)}</div>
+      <div class="sub">${withStats.length}/${subs.length} 位 UP 有数据</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">🎬 合计视频</div>
+      <div class="value success">${fmtNum(totalVideos)}</div>
+      <div class="sub">全平台历史累计</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">▶ 平均播放（人均）</div>
+      <div class="value">${avgViewAcross != null ? fmtNum(avgViewAcross) : '—'}</div>
+      <div class="sub">每位 UP 的均播再平均</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">❤ 平均点赞（人均）</div>
+      <div class="value">${avgLikeAcross != null ? fmtNum(avgLikeAcross) : '—'}</div>
+      <div class="sub">${cntLike === 0 ? '暂未采集' : '每位 UP 均赞再平均'}</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">🔥 48h 内新投稿</div>
+      <div class="value warn">${recentCount}</div>
+      <div class="sub">下方橙色高亮的 UP</div>
+    </div>
+  `;
 }
 
 async function watchAdd() {
@@ -335,23 +399,27 @@ function onBgJobDone(kind, j) {
   if (kind === "watch-check") {
     const newVideos = j.new_videos || [];
     const errs = j.errors || [];
+    // v2.2: 强化反馈 —— 无论有无新稿件都强提示 + 展示 stdout
+    const summary = `检查完毕 · 订阅 ${j.subs_count || '?'} 位 · 新稿件 ${newVideos.length} 个 · 错误 ${errs.length} 个`;
     if (newVideos.length > 0) {
       const list = newVideos.slice(0, 10).map(v => escapeHtml(v)).join("<br>");
       toast("success", `🎉 发现 ${newVideos.length} 个新稿件！`,
         list + (newVideos.length > 10 ? `<br>...还有 ${newVideos.length - 10} 条` : ""), 30000);
       notify("BiliWatch · 发现新稿件", `共 ${newVideos.length} 个新稿件`);
     } else {
-      toast("info", "✓ 检查完成", `${j.subs_count} 个订阅均为最新，无新稿件`, 5000);
+      // v2.2 改进：无新稿件时也醒目提示（用户之前反馈"不反映结果"）
+      toast("success", `✓ ${summary}`,
+        `所有订阅都是最新，暂无新稿件 · 下方列表已刷新最新数据`, 8000);
     }
     if (errs.length > 0) {
       toast("warn", `⚠️ ${errs.length} 个订阅采集失败`,
         errs.slice(0, 5).map(e => escapeHtml(e)).join("<br>") +
           (errs.length > 5 ? `<br>...还有 ${errs.length - 5} 条` : ""), 12000);
     }
-    if (j.stdout) {
-      showResult("watch-result", (j.stdout || "") + (j.stderr ? "\n---\nSTDERR:\n" + j.stderr : ""));
-    }
-    loadWatch();
+    // 始终显示结果面板
+    const resultText = `【${summary}】\n\n` + (j.stdout || "") + (j.stderr ? "\n---\nSTDERR:\n" + j.stderr : "");
+    showResult("watch-result", resultText);
+    loadWatch();  // 刷新列表反映新时间戳/bvid
   } else if (kind === "refresh-names") {
     toast("success", "🏷️ 用户名刷新完成",
       `更新 <strong>${j.updated}</strong> / ${j.total}` + (j.failed ? ` · 失败 ${j.failed}` : ""),

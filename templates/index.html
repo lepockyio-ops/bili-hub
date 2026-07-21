@@ -73,6 +73,12 @@
       <button class="btn" onclick="loadWatch()">🔄 刷新列表</button>
     </div>
 
+    <!-- v2.2: UP 主总览面板 -->
+    <div class="card" id="watch-summary-card">
+      <h3>📊 全部订阅总览 <span class="hint" style="padding:0;">（首次使用请点上方「🏷️ 刷新用户信息」填充数据）</span></h3>
+      <div id="watch-summary-panel" class="summary-cards" style="margin: 0;"></div>
+    </div>
+
     <div class="card">
       <h3>添加新订阅 <span class="hint" style="padding:0;">（支持批量：一行一个链接或 UID）</span></h3>
       <textarea id="watch-input" rows="3" placeholder="支持多种格式，一行一个：&#10;https://space.bilibili.com/12345&#10;12345&#10;67890"></textarea>
