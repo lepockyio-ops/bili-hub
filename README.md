@@ -160,6 +160,9 @@ python app.py
 MIT © 2026 Pocky
 
 
+https://docs.google.com/document/d/1ybZtC3BlBfJ47C-UGCC7tC2iTU6uWJxWscWKX45tJKY/edit?usp=sharing
+https://docs.google.com/spreadsheets/d/1xOOpGaBLTwYhS8E5DPwCbHeQp-WoSjuFDf0m9AohYvo/edit?usp=sharing
+
 
 
 
